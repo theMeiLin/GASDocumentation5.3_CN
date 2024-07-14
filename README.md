@@ -106,3 +106,12 @@ GAS 的当前问题：
 | GE_ | GameplayEffect  |
 
 **[⬆ Back to Top](#table-of-contents)**
+
+## 3.使用 GAS 设置项目
+使用 GAS 设置项目的基本步骤：
+1. 在编辑器中启用 GameplayAbilitySystem 插件。
+2. 编辑`YourProjectName.Build.cs`以将`"GameplayAbilities", "GameplayTags", "GameplayTasks"`添加到`PrivateDependencyModuleNames`中。注：如果后续有报错的情况下可以把`"GameplayAbilities"`移动到`PublicDependencyModuleNames`。
+3. 刷新重新生成 Visual Studio 项目文件。
+4. 从 4.24 开始，现在必须调用 `UAbilitySystemGlobals::Get().InitGlobalData()` 使用 [`TargetData`](#concepts-targeting-data)。示例项目在`UAssetManager::StartInitialLoading()`中执行此操作。有关更多信息，请参见 [`InitGlobalData()`](#concepts-asg-initglobaldata)。
+
+这就是启用 GAS 所需要做的全部事情。从这里，将[`ASC`](#concepts-asc) 和 [`AttributeSet`](#concepts-as) 添加到您的`Character`或`PlayerState`中并开始制作[`GameplayAbilities`](#concepts-ga) 和 [`GameplayEffects`](#concepts-ge)！
