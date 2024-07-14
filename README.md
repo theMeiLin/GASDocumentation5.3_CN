@@ -159,3 +159,19 @@ GAS 的当前问题：
 
 `ASC`（AbilitySystemComponent）在其`FGameplayAbilitySpecContainer ActivatableAbilities`成员变量中存储被授予的`Gameplay Abilities`（游戏玩法能力）。每当计划遍历ActivatableAbilities.Items时，务必在循环上方添加`ABILITYLIST_SCOPE_LOCK();`来锁定列表，防止在迭代过程中因移除能力而导致的列表更改。每个处于作用域内的`ABILITYLIST_SCOPE_LOCK();`都会递增`AbilityScopeLockCount`计数器，当它超出作用域时则递减计数器。不要尝试在`ABILITYLIST_SCOPE_LOCK();`的作用域内移除能力（清除能力的函数内部会检查`AbilityScopeLockCount`，以防止在列表被锁定时移除能力）。
 
+### 4.1.1 复制模式
+`ASC`（AbilitySystemComponent）定义了三种不同的复制模式，用于复制`GameplayEffects`（游戏玩法效果）、`GameplayTags`（游戏玩法标签）和`GameplayCues`（游戏玩法线索）——分别是`Full`（全量）、`Mixed`（混合）和`Minimal`（最小）。而`Attributes`（属性）则是通过它们所属的`AttributeSet`进行复制的。
+
+| 复制模式      | 何时使用               | 描述                                                                       |
+| --------- | ------------------ | ------------------------------------------------------------------------ |
+| `Full`    | 单人游戏               | 每个`GameplayEffect`都会复制到每个客户端。                                            |
+| `Mixed`   | 多人游戏，玩家控制的`Actors` | `GameplayEffects`仅复制给拥有该效果的客户端。而`GameplayTags`和`GameplayCues`则被复制给所有客户端  |
+| `Minimal` | 多人游戏，AI控制的`Actors` | `GameplayEffects`永远不会被复制给任何客户端。只有`GameplayTags`和`GameplayCues`被复制给所有客户端。 |
+>译者者：按我理解就是单机游戏，PVP，PVE(可能包含PVP)。
+
+**注意:** `Mixed` 复制模式期望 `OwnerActor` 的 `Owner` 是`Controller`。`PlayerState` 的`Owner` 默认是 `Controller`， 但 `Character` 的不是。如果在`OwnerActor` 不是 `PlayerState` 的情况下使用 `Mixed` 复制模式， 那么你需要通过调用 `SetOwner()` 方法并传入一个有效的 `Controller` 来设置 `OwnerActor` 的所有者。
+
+从 4.24 版本开始，`PossessedBy()`方法现在会将 `Pawn` 的拥有者设置为新的 `Controller`。
+
+**[⬆ Back to Top](#table-of-contents)**
+
