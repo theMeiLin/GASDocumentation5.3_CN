@@ -69,7 +69,8 @@
       }
     ],
     "direction": "horizontal",
-    "width": 200
+    "width": 200,
+    "collapsed": true
   },
   "right": {
     "id": "e555dd6314b99512",
@@ -171,7 +172,7 @@
       "table-editor-obsidian:Advanced Tables Toolbar": false
     }
   },
-  "active": "43efc25b6cb9a12c",
+  "active": "68a7408381e4f635",
   "lastOpenFiles": [
     "README.md",
     "GASDocumentation5.3_CN",
