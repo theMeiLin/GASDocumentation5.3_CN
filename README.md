@@ -377,3 +377,68 @@ virtual void HealthChanged(const FOnAttributeChangeData& Data);
 **[⬆ Back to Top](#table-of-contents)**
 
 #### 4.3.5 Derived Attributes（派生属性）
+要创建一个其值部分或全部来源于一个或多个其他 `Attributes` 的 `Derived Attribute`（派生属性），可以使用带有一个或多个基于 `Attribute` 的或 [`MMC`](#concepts-ge-mmc)（Modified Modifier Magnitude Calculator，修正修饰符幅度计算器）[`Modifiers`](#concepts-ge-mods)  （修饰符） 的 `Infinite`（无限持续）`GameplayEffect`。当依赖的 `Attribute` 更新时，`Derived Attribute` 会自动随之更新。
+
+对于 `Derived Attribute`（衍生属性）上的所有 `Modifiers`（修饰符），其最终计算公式与 
+`Modifier Aggregators`（修饰符聚合器）所使用  的公式相同。如果需要按照特定顺序执行计算，那么应将所有计算逻辑置于一个 `MMC`（Modified Modifier Magnitude Calculator，修改后的修饰符幅度计算器）内部完成。
+
+```C++
+((CurrentValue + Additive) * Multiplicitive) / Division  
+```
+
+**注意:** 如果在PIE（Play In Editor，编辑器内播放）模式下使用多个客户端进行测试，你需要在编辑器偏好设置中禁用 `Run Under One Process` 选项。否则，当除第一个客户端以外的其他客户端上的独立 `Attributes` 更新时，`Derived Attributes`（衍生属性）将无法得到更新。
+
+在这个例子中，我们应用了一个 `Infinite`（无限持续）的 `GameplayEffect`，用来根据公式 `TestAttrA = (TestAttrA + TestAttrB) * (2 * TestAttrC)` ，从 `Attributes TestAttrB` 和 `TestAttrC` 派生出 `TestAttrA` 的值。每当 `TestAttrB` 或 `TestAttrC` 中的任何一个属性更新其值时，  `TestAttrA` 都会自动重新计算其自身的值。
+
+![Derived Attribute Example](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/derivedattribute.png)
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 4.4 Attribute Set
+#### 4.4.1 Attribute Set 定义
+`AttributeSet` 用于定义、保存和管理对 `Attributes` 的更改。 开发人员应当从 [`UAttributeSet`](https://docs.unrealengine.com/en-US/API/Plugins/GameplayAbilities/UAttributeSet/index.html) 继承。 在 `OwnerActor` 的构造函数中创建一个 `AttributeSet` 会自动将其注册到对应的 `ASC` 中。**这项操作必须用 C++ 来完成。**
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.4.2 Attribute Set Design（设计）
+一个 `ASC`（属性集组件）可以拥有一个或多个 `AttributeSet`。由于 `AttributeSet` 的内存开销非常小，因此使用多少个 `AttributeSet` 完全取决于开发者的组织决策。
+
+可以接受的做法是为游戏中的每个 `Actor` 共享一个大型的单一 `AttributeSet`，并且仅在需要时使用其中的属性，而忽略那些未使用的属性。
+
+或者，你可以选择拥有多个 `AttributeSet`，这些 `AttributeSet` 分别代表了根据需要选择性地添加到 `Actor` 上的不同属性组。例如，你可以有一个针对生命值相关的 `AttributeSet`，另一个针对法力值相关的 `AttributeSet`，等等。在一个 MOBA 游戏中，英雄可能需要法力值，而小兵则可能不需要。因此，英雄会获得法力值 `AttributeSet`，而小兵则不会。
+
+此外，可以通过继承 `AttributeSet` 作为另一种选择性地决定 `Actor` 拥有哪些属性的方法。属性内部被称为 `AttributeSetClassName.AttributeName`。当你继承一个 `AttributeSet` 时，所有来自父类的属性仍然会以父类的名字作为前缀。
+
+虽然你可以拥有多个 `AttributeSet`，但是你不应该在一个 `ASC` 上拥有同一个类的多个 `AttributeSet` 实例。如果你有来自同一类的多个 `AttributeSet`，系统将无法确定使用哪一个 `AttributeSet`，它只会随机选择其中一个。
+
+##### 4.4.2.1 Subcomponents with Individual Attributes（带有个别属性的子组件）
+在拥有多个可受伤害部件的 `Pawn` 的场景下，比如单独可受伤害的护甲部件，如果已知 `Pawn` 可能拥有的最大可受伤害部件数量，建议在单个 `AttributeSet` 中创建相应数量的生命值 `Attributes` —— 如 `DamageableCompHealth0`、`DamageableCompHealth1` 等——来表示这些可受伤害部件的逻辑“槽位”。在你的可受伤害部件类实例中，分配一个槽位编号 `Attribute`，这个编号可以被 `GameplayAbilities` 或者 [`Executions`](#concepts-ge-ec) （执行）读取，以便知道应该对哪个 `Attribute` 应用伤害。对于拥有少于最大数量或完全没有可受伤害部件的 `Pawns`，这种方式也是可行的。即使 `AttributeSet` 中存在某个 `Attribute`，也不意味着一定要使用它。未使用的 `Attributes` 占用的内存非常少。
+
+如果你的子组件每个都需要大量的 `Attributes`，或者潜在的子组件数量没有上限，子组件可以脱离并被其他玩家使用（例如武器），或者出于任何其他原因这种方法不适用于你，我建议放弃使用 `Attributes`，而是直接在组件上存储普通的浮点数。有关详细信息，请参阅 [Item Attributes](#concepts-as-design-itemattributes) （物品属性）。
+
+##### 4.4.2.2 在运行时添加和删除 AttributeSet
+`AttributeSet` 可以在运行时添加到或从 `ASC` 中移除；然而，移除 `AttributeSet` 可能是危险的。例如，如果客户端上的 `AttributeSet` 在服务器之前被移除，并且有一个属性值变化被复制到客户端，那么该属性将找不到其对应的 `AttributeSet`，从而导致游戏崩溃。
+
+关于武器添加到库存：
+
+```c++  
+AbilitySystemComponent->GetSpawnedAttributes_Mutable().AddUnique(WeaponAttributeSetPointer);  
+AbilitySystemComponent->ForceReplication();  
+```
+
+关于从库存中移除武器：
+```c++  
+AbilitySystemComponent->GetSpawnedAttributes_Mutable().Remove(WeaponAttributeSetPointer);  
+AbilitySystemComponent->ForceReplication();  
+```
+
+##### 4.4.2.3 Item Attributes (Weapon Ammo)【物品属性（武器弹药)】
+有几种方法可以实现带有 `Attributes` 的可装备物品（如武器弹药、护甲耐久度等）。所有这些方法都将值直接存储在物品上。这是对于在其生命周期内可以被多个玩家装备的物品来说必要的做法。
+
+实现可装备物品属性的方法：
+1. 在物品上使用普通浮点数（**推荐**）
+	+ 直接在物品上存储普通的浮点数值，这样可以避免与 `AttributeSet` 和 `ASC` 相关的复杂性。
+2. 在物品上使用单独的 `AttributeSet`
+	+ 为每个物品创建一个单独的 `AttributeSet`，并将其附加到物品上。这种方法增加了灵活性，但同时也引入了更多的管理负担。
+3. 在物品上使用单独的 `ASC`
+	+ 为每个物品配备一个单独的 `ASC`，并在其中管理物品的所有属性。这种方法提供了最大的灵活性，但也可能导致更复杂的架构和更高的资源消耗。
