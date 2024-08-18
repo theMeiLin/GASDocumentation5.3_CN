@@ -1140,3 +1140,417 @@ float UPAMMC_PoisonMana::CalculateBaseMagnitude_Implementation(const FGameplayEf
 如果你没有在 `MMC` 的构造函数中将 `FGameplayEffectAttributeCaptureDefinition` 添加到 `RelevantAttributesToCapture`，并且尝试捕获 `Attributes`，你会在捕获过程中遇到一个关于缺失 Spec 的错误。如果你不需要捕获 `Attributes`，则不必向 `RelevantAttributesToCapture` 添加任何内容。
 
 **[⬆ Back to Top](#table-of-contents)**
+
+#### 4.5.12 Gameplay Effect Execution Calculation
+`GameplayEffectExecutionCalculations` (`ExecutionCalculation`、`Execution`（你经常会在插件的源代码中看到这个词）、或 `ExecCalc`）是 `GameplayEffects` 对 `ASC` 进行更改最强大的方式。与 `ModifierMagnitudeCalculations` 类似，这些也可以捕获 `Attributes` 并可选地对它们进行快照。与 `MMCs` 不同的是，这些可以改变不止一个 `Attribute`，并且基本上可以执行程序员想要做的任何事情。这种强大和灵活性的缺点是它们不能被 [预测](#concepts-p)，并且必须用 C++ 实现。
+
+`ExecutionCalculations` 只能与 `Instant` 和 `Periodic` 类型的 `GameplayEffects` 一起使用。任何带有 'Execute' 字样的通常指的是这两种类型的 `GameplayEffects`。
+
+快照捕获会在创建 `GameplayEffectSpec` 时捕获 `Attribute`，而非快照捕获会在应用 `GameplayEffectSpec` 时捕获 `Attribute`。捕获 `Attributes` 会根据 `ASC` 上现有的 mods 重新计算它们的 `CurrentValue`。这种重新计算 **不会** 运行 `AbilitySet` 中的 [`PreAttributeChange()`](#concepts-as-preattributechange)，因此任何限制必须再次在这里进行。
+
+| 快照 | Source 或 Target | 在 `GameplayEffectSpec` 上捕获 |
+| ---- | --------------- | ------------------------------ |
+| Yes  | Source          | 创建                           |
+| Yes  | Target          | 应用                           |
+| No   | Source          | 应用                           |
+| No   | Target          | 应用                           |
+
+为了设置 `Attribute` 捕获，我们遵循 Epic 的 ActionRPG 示例项目中设定的模式，定义一个结构体来保存如何捕获 `Attributes`，并在结构体的构造函数中创建一个副本。每个 `ExecCalc` 都会有一个这样的结构体。**注意：**每个结构体都需要有一个唯一的名称，因为它们共享同一个命名空间。如果结构体使用相同的名称会导致捕获 `Attributes` 时出现不正确的行为（主要是捕获错误的 `Attributes` 的值）。
+
+对于 `Local Predicted`、`Server Only` 和 `Server Initiated` 类型的 `GameplayAbilities`，`ExecCalc` 只在服务器上调用。
+
+基于复杂的公式计算受到的伤害，该公式从 `Source` 和 `Target` 上的多个属性读取数据，这是 `ExecCalc` 最常见的例子。包含的示例项目有一个简单的 `ExecCalc` 来计算伤害，它从 `GameplayEffectSpec` 的 `[SetByCaller]`(#concepts-ge-spec-setbycaller) 读取伤害值，然后根据从 `Target` 捕获的护甲 `Attribute` 来减轻该值。参见 `GDDamageExecCalculation.cpp/.h`。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+##### 4.5.12.1 Sending Data to Execution Calculations
+除了捕获 `Attributes` 之外，还有几种方法可以向 `ExecutionCalculation` 发送数据。
+
+###### 4.5.12.1.1 SetByCaller
+任何设置在 `GameplayEffectSpec` 上的 [`SetByCallers`](#concepts-ge-spec-setbycaller) 都可以直接在 `ExecutionCalculation` 中读取。
+
+```c++  
+const FGameplayEffectSpec& Spec = ExecutionParams.GetOwningSpec();  
+float Damage = FMath::Max<float>(Spec.GetSetByCallerMagnitude(FGameplayTag::RequestGameplayTag(FName("Data.Damage")), false, -1.0f), 0.0f);  
+```
+
+###### 4.5.12.1.2 Backing Data Attribute Calculation Modifier
+如果你想为 `GameplayEffect` 硬编码一些值，你可以使用 `CalculationModifier` 来传递这些值，其中使用其中一个捕获的 `Attribute` 作为支持数据。
+
+在这个截图示例中，我们正在将 50 加到捕获的 Damage `Attribute` 上。你也可以将其设置为 `Override`，仅接收硬编码的值。
+
+![支持数据属性计算修饰符](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/calculationmodifierbackingdataattribute.png)
+
+`ExecutionCalculation` 在捕获 `Attribute` 时会读取这个值。
+
+```c++  
+float Damage = 0.0f;  
+// 捕获在伤害 GE 上设置的可选伤害值作为 ExecutionCalculation 下的 CalculationModifier  
+ExecutionParams.AttemptCalculateCapturedAttributeMagnitude(DamageStatics().DamageDef, EvaluationParameters, Damage);  
+```
+
+###### 4.5.12.1.3 Backing Data Temporary Variable Calculation Modifier
+如果你想为 `GameplayEffect` 硬编码一些值，你可以使用 `CalculationModifier`，其中使用一个 `Temporary Variable`（在 C++ 中称为 `Transient Aggregator`）。`Temporary Variable` 与一个 `GameplayTag` 相关联。
+
+在这个截图示例中，我们正在使用 `Data.Damage` `GameplayTag` 将 50 加到一个 `Temporary Variable` 上。
+
+![支持数据临时变量计算修饰符](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/calculationmodifierbackingdatatempvariable.png)
+
+在你的 `ExecutionCalculation` 构造函数中添加支持的 `Temporary Variables`：
+
+```c++  
+ValidTransientAggregatorIdentifiers.AddTag(FGameplayTag::RequestGameplayTag("Data.Damage"));  
+```
+
+`ExecutionCalculation` 使用类似于 `Attribute` 捕获函数的特殊捕获函数来读取这个值。
+
+```c++  
+float Damage = 0.0f;  
+ExecutionParams.AttemptCalculateTransientAggregatorMagnitude(FGameplayTag::RequestGameplayTag("Data.Damage"), EvaluationParameters, Damage);  
+```
+
+###### 4.5.12.1.4 Gameplay Effect Context
+你可以通过 `GameplayEffectSpec` 上的自定义 [`GameplayEffectContext`](#concepts-ge-context) 向 `ExecutionCalculation` 发送数据。
+
+在 `ExecutionCalculation` 中，你可以从 `FGameplayEffectCustomExecutionParameters` 访问 `EffectContext`。
+
+```c++  
+const FGameplayEffectSpec& Spec = ExecutionParams.GetOwningSpec();  
+FGSGameplayEffectContext* ContextHandle = static_cast<FGSGameplayEffectContext*>(Spec.GetContext().Get());  
+```
+
+如果你需要修改 `GameplayEffectSpec` 或 `EffectContext`：
+
+```c++  
+FGameplayEffectSpec* MutableSpec = ExecutionParams.GetOwningSpecForPreExecuteMod();  
+FGSGameplayEffectContext* ContextHandle = static_cast<FGSGameplayEffectContext*>(MutableSpec->GetContext().Get());  
+```
+
+在 `ExecutionCalculation` 中修改 `GameplayEffectSpec` 时需谨慎。参阅 `GetOwningSpecForPreExecuteMod()` 的注释。
+
+```c++  
+/** 非常量访问。对此要小心，尤其是在属性捕获后修改等级库时. */  
+FGameplayEffectSpec* GetOwningSpecForPreExecuteMod() const;  
+```
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.5.13 Custom Application Requirement
+`CustomApplicationRequirement` (`CAR`) 类为设计师提供了高级控制权，以确定是否可以应用 `GameplayEffect`，这比简单的 `GameplayTag` 检查更为灵活。这些可以通过覆盖 Blueprint 中的 `CanApplyGameplayEffect()` 或 C++ 中的 `CanApplyGameplayEffect_Implementation()` 来实现。
+
+使用 `CARs` 的示例：
+* `Target` 需要有一定数量的某个 `Attribute`
+* `Target` 需要有一定数量的某个 `GameplayEffect` 的叠加次数
+
+`CARs` 还可以做更复杂的事情，例如检查 `Target` 上是否已经存在该 `GameplayEffect` 的实例，并更改现有实例的 [持续时间](#concepts-ge-duration) 而不是应用一个新的实例（返回 false 表示 `CanApplyGameplayEffect()`）。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.5.14 Cost Gameplay Effect
+`GameplayAbilities` 可以有一个可选的 `GameplayEffect`，专门设计用来作为该能力的成本。成本是指 `ASC` 为了激活 `GameplayAbility` 所需拥有的 `Attribute` 数量。如果 `GA` 无法承担 `Cost GE`，那么它们将无法激活。这个 `Cost GE` 应该是一个 `Instant` 类型的 `GameplayEffect`，具有一个或多个从 `Attributes` 中减去数值的 `Modifiers`。默认情况下，`Cost GEs` 是为了能够被预测而设计的，因此建议保留这种能力，也就是说不要使用 `ExecutionCalculations`。对于复杂的成本计算，`MMCs` 完全适用且被鼓励使用。
+
+刚开始时，你可能会为每个具有成本的 `GA` 设计一个独特的 `Cost GE`。一种更高级的技术是在多个 `GAs` 中重用一个 `Cost GE`，只需修改从 `Cost GE` 创建的 `GameplayEffectSpec`，加入特定于 `GA` 的数据（成本值定义在 `GA` 上）。**这只适用于 `Instanced` 类型的能力。**
+
+重用 `Cost GE` 的两种技术：
+
+1. **使用 `MMC`。** 这是最简单的方法。创建一个 `MMC` 来从 `GameplayAbility` 实例读取成本值，这个实例可以从 `GameplayEffectSpec` 获取。
+
+```c++  
+float UPGMMC_HeroAbilityCost::CalculateBaseMagnitude_Implementation(const FGameplayEffectSpec & Spec) const  
+{  
+    const UPGGameplayAbility* Ability = Cast<UPGGameplayAbility>(Spec.GetContext().GetAbilityInstance_NotReplicated());  
+    if (!Ability)    {       return 0.0f;    }  
+    return Ability->Cost.GetValueAtLevel(Ability->GetAbilityLevel());}  
+```
+
+在这个示例中，成本值是我在 `GameplayAbility` 子类上添加的一个 `FScalableFloat`。
+
+```c++  
+UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Cost")  
+FScalableFloat Cost;  
+```
+
+![Cost GE With MMC](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/costmmc.png)
+
+2. **覆盖 `UGameplayAbility::GetCostGameplayEffect()`。** 覆盖此函数并在运行时 [创建一个 `GameplayEffect`](#concepts-ge-dynamic) 来读取 `GameplayAbility` 上的成本值。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.5.15 Cooldown Gameplay Effect
+`GameplayAbilities` 可以有一个可选的 `GameplayEffect`，专门设计用来作为该能力的冷却时间。冷却时间决定了能力激活后多久可以再次激活。如果 `GA` 仍在冷却中，则它不能被激活。这个 `Cooldown GE` 应该是一个 `Duration` 类型的 `GameplayEffect`，没有 `Modifiers`，并且为每个 `GameplayAbility` 或每个能力槽位（如果你的游戏有可互换的能力分配给共享冷却时间的槽位）在 `GameplayEffect` 的 `GrantedTags` 中有一个唯一的 `GameplayTag`（称为 `Cooldown Tag`）。实际上 `GA` 检查的是 `Cooldown Tag` 的存在而不是 `Cooldown GE` 的存在。默认情况下，`Cooldown GEs` 是为了能够被预测而设计的，因此建议保留这种能力，也就是说不要使用 `ExecutionCalculations`。对于复杂的冷却时间计算，`MMCs` 完全适用且被鼓励使用。
+
+刚开始时，你可能会为每个具有冷却时间的 `GA` 设计一个独特的 `Cooldown GE`。一种更高级的技术是在多个 `GAs` 中重用一个 `Cooldown GE`，只需修改从 `Cooldown GE` 创建的 `GameplayEffectSpec`，加入特定于 `GA` 的数据（冷却时间和 `Cooldown Tag` 定义在 `GA` 上）。**这只适用于 `Instanced` 类型的能力。**
+
+重用 `Cooldown GE` 的两种技术：
+
+1. **使用一个 [`SetByCaller`](#concepts-ge-spec-setbycaller)。** 这是最简单的方法。将共享的 `Cooldown GE` 的持续时间设置为 `SetByCaller` 并关联一个 `GameplayTag`。在你的 `GameplayAbility` 子类上，定义一个 float / `FScalableFloat` 来表示持续时间，一个 `FGameplayTagContainer` 用于存储唯一的 `Cooldown Tag`，以及一个临时的 `FGameplayTagContainer`，我们将用它作为合并我们的 `Cooldown Tag` 和 `Cooldown GE` 的标签后的返回指针。
+
+```c++  
+UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Cooldown")  
+FScalableFloat CooldownDuration;  
+  
+UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Cooldown")  
+FGameplayTagContainer CooldownTags;  
+  
+// 我们将在 GetCooldownTags（） 中返回指针的临时容器
+// 这将是我们的 CooldownTags 和 Cooldown GE 的冷却标签的结合。  
+UPROPERTY(Transient)  
+FGameplayTagContainer TempCooldownTags;  
+```
+
+然后覆盖 `UGameplayAbility::GetCooldownTags()` 来返回我们的 `Cooldown Tags` 与现有的 `Cooldown GE` 标签的并集。
+
+```c++  
+const FGameplayTagContainer * UPGGameplayAbility::GetCooldownTags() const  
+{  
+    FGameplayTagContainer* MutableTags = const_cast<FGameplayTagContainer*>(&TempCooldownTags);
+    MutableTags->Reset();// MutableTags 写入 CDO 上的 TempCooldownTags，因此请在技能冷却标签更改（移动到不同的插槽）时清除它
+    const FGameplayTagContainer* ParentTags = Super::GetCooldownTags();
+    if (ParentTags)
+    {
+	    MutableTags->AppendTags(*ParentTags);
+	}
+	MutableTags->AppendTags(CooldownTags);
+	return MutableTags;
+}  
+```
+
+最后，覆盖 `UGameplayAbility::ApplyCooldown()` 来注入我们的 `Cooldown Tags` 并向冷却 `GameplayEffectSpec` 添加 `SetByCaller`。
+
+```c++  
+void UPGGameplayAbility::ApplyCooldown(const FGameplayAbilitySpecHandle Handle,
+									   const FGameplayAbilityActorInfo * ActorInfo,
+									   const FGameplayAbilityActivationInfo ActivationInfo)
+									   const  
+{
+	UGameplayEffect* CooldownGE = GetCooldownGameplayEffect();
+	if (CooldownGE)
+	{
+		FGameplayEffectSpecHandle SpecHandle = MakeOutgoingGameplayEffectSpec(CooldownGE->GetClass(), GetAbilityLevel());
+		SpecHandle.Data.Get()->DynamicGrantedTags.AppendTags(CooldownTags);
+		SpecHandle.Data.Get()->SetSetByCallerMagnitude(FGameplayTag::RequestGameplayTag(
+			FName(OurSetByCallerTag)),
+			CooldownDuration.GetValueAtLevel(GetAbilityLevel())
+		);
+		ApplyGameplayEffectSpecToOwner(Handle, ActorInfo, ActivationInfo, SpecHandle);
+	}
+}  
+```
+
+在这张图片中，冷却时间（cooldown）的持续时长 Modifier 被设置为 SetByCaller，并且关联了一个 Data Tag 为 Data.Cooldown。
+
+![Cooldown GE with SetByCaller](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/cooldownsbc.png)
+
+2. **使用一个 [`MMC`](#concepts-ge-mmc).** 这种设置与上述相同，只是不在 `Cooldown GE` 和 `ApplyCooldown` 中使用 `SetByCaller` 来设置冷却时间的持续时长。相反，将冷却时间的持续时长设置为一个 `Custom Calculation Class`，并指向我们将要创建的新 `MMC`。
+
+```c++  
+UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Cooldown")  
+FScalableFloat CooldownDuration;  
+  
+UPROPERTY(BlueprintReadOnly, EditAnywhere, Category = "Cooldown")  
+FGameplayTagContainer CooldownTags;  
+  
+// 我们将在 GetCooldownTags（） 中将指针返回到的临时容器。
+// 这将是我们的 CooldownTags 和 Cooldown GE 的冷却标签的结合。  
+UPROPERTY(Transient)  
+FGameplayTagContainer TempCooldownTags;  
+```
+
+然后，重写 `UGameplayAbility::GetCooldownTags()` 方法来返回我们自定义的 `Cooldown Tags` 与任何现有 `Cooldown GE` 的标签的并集。
+
+```c++  
+const FGameplayTagContainer * UPGGameplayAbility::GetCooldownTags() const  
+{
+	FGameplayTagContainer* MutableTags = const_cast<FGameplayTagContainer*>(&TempCooldownTags);
+	MutableTags->Reset();// MutableTags 写入 CDO 上的 TempCooldownTags，因此请在技能冷却标签更改（移动到不同的插槽）时清除它
+	const FGameplayTagContainer* ParentTags = Super::GetCooldownTags();
+	if (ParentTags)
+	{
+		MutableTags->AppendTags(*ParentTags);
+	}
+	MutableTags->AppendTags(CooldownTags);    
+	return MutableTags;
+}  
+```
+
+最后，重写 `UGameplayAbility::ApplyCooldown()` 方法来将我们的 `Cooldown Tags` 注入到冷却时间的 `GameplayEffectSpec` 中。
+
+```c++  
+void UPGGameplayAbility::ApplyCooldown(const FGameplayAbilitySpecHandle Handle,
+									   const FGameplayAbilityActorInfo * ActorInfo,
+									   const FGameplayAbilityActivationInfo ActivationInfo)
+									   const  
+{  
+	UGameplayEffect* CooldownGE = GetCooldownGameplayEffect();
+	if (CooldownGE)
+	{
+		FGameplayEffectSpecHandle SpecHandle = MakeOutgoingGameplayEffectSpec(CooldownGE->GetClass(), GetAbilityLevel());
+		SpecHandle.Data.Get()->DynamicGrantedTags.AppendTags(CooldownTags);
+		ApplyGameplayEffectSpecToOwner(Handle, ActorInfo, ActivationInfo, SpecHandle);
+	}
+}  
+```
+
+```c++  
+float UPGMMC_HeroAbilityCooldown::CalculateBaseMagnitude_Implementation(const FGameplayEffectSpec & Spec) const  
+{  
+    const UPGGameplayAbility* Ability = Cast<UPGGameplayAbility>(Spec.GetContext().GetAbilityInstance_NotReplicated());  
+    if (!Ability)    
+    {
+	    return 0.0f;    
+	}  
+    return Ability->CooldownDuration.GetValueAtLevel(Ability->GetAbilityLevel());
+}  
+```
+
+![Cooldown GE with MMC](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/cooldownmmc.png)
+
+##### 4.5.15.1 Get the Cooldown Gameplay Effect's Remaining Time
+```c++  
+bool APGPlayerState::GetCooldownRemainingForTag(FGameplayTagContainer CooldownTags,
+												float & TimeRemaining,
+												float & CooldownDuration)  
+{  
+	if (AbilitySystemComponent && CooldownTags.Num() > 0)
+	{       
+		TimeRemaining = 0.f;       
+		CooldownDuration = 0.f;
+		FGameplayEffectQuery const Query = FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(CooldownTags);
+		TArray<TPair<float, float>> DurationAndTimeRemaining = AbilitySystemComponent->GetActiveEffectsTimeRemainingAndDuration(Query);       
+		if (DurationAndTimeRemaining.Num() > 0)       
+		{          
+			int32 BestIdx = 0;          
+			float LongestTime = DurationAndTimeRemaining[0].Key;         
+			for (int32 Idx = 1; Idx < DurationAndTimeRemaining.Num(); ++Idx)          
+			{
+				if (DurationAndTimeRemaining[Idx].Key > LongestTime)             
+				{               
+					LongestTime = DurationAndTimeRemaining[Idx].Key;                
+					BestIdx = Idx;             
+				}          
+			}  
+	        TimeRemaining = DurationAndTimeRemaining[BestIdx].Key;          
+	        CooldownDuration = DurationAndTimeRemaining[BestIdx].Value;  
+	        
+	        return true;       
+	    }    
+	}  
+	
+    return false;
+}  
+```
+
+**注意：** 在客户端查询冷却时间剩余的时间要求客户端能够接收复制的 `GameplayEffects`。这取决于它们的 `ASC` 的 [复制模式](#concepts-asc-rm)。
+
+##### 4.5.15.2 监听冷却开始和结束
+要监听冷却开始，您可以选择响应 `Cooldown GE` 应用时的情况，通过绑定到 `AbilitySystemComponent->OnActiveGameplayEffectAddedDelegateToSelf`，或者响应 `Cooldown Tag` 添加时的情况，通过绑定到 `AbilitySystemComponent->RegisterGameplayTagEvent(CooldownTag, EGameplayTagEventType::NewOrRemoved)`。我建议监听 `Cooldown GE` 添加的情况，因为这样您还可以访问到应用它的 `GameplayEffectSpec`。从这里您可以判断 `Cooldown GE` 是否是本地预测的，还是服务器校正的。
+
+要监听冷却结束，您可以选择响应 `Cooldown GE` 移除时的情况，通过绑定到 `AbilitySystemComponent->OnAnyGameplayEffectRemovedDelegate()`，或者响应 `Cooldown Tag` 移除时的情况，通过绑定到 `AbilitySystemComponent->RegisterGameplayTagEvent(CooldownTag, EGameplayTagEventType::NewOrRemoved)`。我建议监听 `Cooldown Tag` 移除的情况，因为当服务器校正的 `Cooldown GE` 到达时，它会移除我们的本地预测的 `Cooldown GE`，导致 `OnAnyGameplayEffectRemovedDelegate()` 触发，即使我们仍然处于冷却状态。在移除预测的 `Cooldown GE` 和应用服务器校正的 `Cooldown GE` 期间，`Cooldown Tag` 不会发生变化。
+
+**注意：** 在客户端监听 `GameplayEffect` 添加或移除的情况要求客户端能够接收复制的 `GameplayEffects`。这取决于它们的 `ASC` 的 [复制模式](#concepts-asc-rm)。
+
+示例项目包括一个自定义的 Blueprint 节点，用于监听冷却开始和结束。HUD UMG 小部件使用它来更新 Meteor 冷却时间剩余的时间。这个 `AsyncTask` 会一直存在，直到手动调用 `EndTask()`，我们在 UMG 小部件的 `Destruct` 事件中执行此操作。参见 [`AsyncTaskCooldownChanged.h/cpp`](Source/GASDocumentation/Private/Characters/Abilities/AsyncTaskCooldownChanged.cpp)。
+
+![Listen for Cooldown Change BP Node](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/cooldownchange.png)
+
+##### 4.5.15.3 Predicting Cooldowns
+目前冷却时间实际上无法真正被预测。我们可以开始 UI 冷却计时器，当本地预测的 `Cooldown GE` 应用时，但是 `GameplayAbility` 实际上的冷却时间是与服务器上剩余的冷却时间绑定的。根据玩家的延迟情况，本地预测的冷却时间可能会过期，但 `GameplayAbility` 仍然在服务器上处于冷却状态，这会阻止 `GameplayAbility` 立即重新激活，直到服务器的冷却时间到期。
+
+示例项目通过在本地预测的冷却开始时将 Meteor 能力的 UI 图标灰化，并在服务器校正的 `Cooldown GE` 到达后启动冷却计时器来处理这种情况。
+
+这一游戏机制的一个后果是，高延迟的玩家在短冷却时间的能力上有较低的射击频率，相比低延迟的玩家处于劣势。《堡垒之夜》通过其武器具有定制的账目管理（不使用冷却 `GameplayEffects`）来避免这种情况。
+
+允许真正的预测冷却时间（玩家可以在本地冷却时间到期时激活 `GameplayAbility`，即使服务器仍在冷却状态）是 Epic 希望在未来版本的 GAS 中实现的功能之一。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.5.16 Changing Active Gameplay Effect Duration
+要更改 `Cooldown GE` 或任何 `Duration` 类型的 `GameplayEffect` 的剩余时间，我们需要更改 `GameplayEffectSpec` 的 `Duration`，更新其 `StartServerWorldTime`，更新其 `CachedStartServerWorldTime`，更新其 `StartWorldTime`，并重新运行 `CheckDuration()` 来检查持续时间。在服务器上执行这些操作并将 `FActiveGameplayEffect` 标记为脏数据将会将更改复制到客户端。
+
+**注意：** 这确实涉及到了 `const_cast` 的使用，可能不是 Epic 预期的更改持续时间的方式，但目前为止似乎工作得很好。
+
+```c++  
+bool UPAAbilitySystemComponent::SetGameplayEffectDurationHandle(
+		FActiveGameplayEffectHandle Handle,
+		float NewDuration)  
+{  
+    if (!Handle.IsValid())    
+    {       
+	    return false;    
+	}  
+    const FActiveGameplayEffect* ActiveGameplayEffect = GetActiveGameplayEffect(Handle);    
+    if (!ActiveGameplayEffect)    
+    {       
+	    return false;    
+	}  
+    FActiveGameplayEffect* AGE = const_cast<FActiveGameplayEffect*>(ActiveGameplayEffect);
+    if (NewDuration > 0)    
+    {       
+	    AGE->Spec.Duration = NewDuration;    
+	}    
+	else    
+	{       
+		AGE->Spec.Duration = 0.01f;    
+	}  
+    AGE->StartServerWorldTime = ActiveGameplayEffects.GetServerWorldTime();
+    AGE->CachedStartServerWorldTime = AGE->StartServerWorldTime;
+    AGE->StartWorldTime = ActiveGameplayEffects.GetWorldTime();
+    ActiveGameplayEffects.MarkItemDirty(*AGE);    
+    ActiveGameplayEffects.CheckDuration(Handle);  
+    AGE->EventSet.OnTimeChanged.Broadcast(AGE->Handle,
+										  AGE->StartWorldTime, 
+										  AGE->GetDuration()
+	);    
+	OnGameplayEffectDurationChange(*AGE);  
+	
+    return true;
+}  
+```
+
+**[⬆ Back to Top](#table-of-contents)**
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
