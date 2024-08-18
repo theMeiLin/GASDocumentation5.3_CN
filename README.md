@@ -648,3 +648,495 @@ UGameplayAbility 应该是“每次执行时实例化”的对象。如果您需
 2. 可行性问题
 
 **[⬆ Back to Top](#table-of-contents)**
+
+#### 4.4.3 Defining Attributes
+**`Attributes` 必须在 `AttributeSet` 的头文件中定义**。建议在每个 `AttributeSet` 头文件的顶部添加以下宏块。这将自动为您的 `Attributes` 生成 getter 和 setter 函数。
+```c++  
+// Uses macros from AttributeSet.h  
+#define ATTRIBUTE_ACCESSORS(ClassName, PropertyName) \  
+    GAMEPLAYATTRIBUTE_PROPERTY_GETTER(ClassName, PropertyName) \    GAMEPLAYATTRIBUTE_VALUE_GETTER(PropertyName) \    GAMEPLAYATTRIBUTE_VALUE_SETTER(PropertyName) \    GAMEPLAYATTRIBUTE_VALUE_INITTER(PropertyName)  
+```
+
+一个复制的健康属性可以像下面这样定义：
+
+```c++  
+UPROPERTY(BlueprintReadOnly, Category = "Health", ReplicatedUsing = OnRep_Health)  
+FGameplayAttributeData Health;  
+ATTRIBUTE_ACCESSORS(UGDAttributeSetBase, Health)  
+```
+
+还要在头文件中定义 `OnRep` 函数：
+
+```c++  
+UFUNCTION()  
+virtual void OnRep_Health(const FGameplayAttributeData& OldHealth);  
+```
+
+`AttributeSet` 的 .cpp 文件应该使用预测系统使用的 `GAMEPLAYATTRIBUTE_REPNOTIFY` 宏填充 `OnRep` 函数：
+
+```c++  
+void UGDAttributeSetBase::OnRep_Health(const FGameplayAttributeData& OldHealth)  
+{  
+    GAMEPLAYATTRIBUTE_REPNOTIFY(UGDAttributeSetBase, Health, OldHealth);}  
+```
+
+最后，需要将 `Attribute` 添加到 `GetLifetimeReplicatedProps`：
+
+```c++  
+void UGDAttributeSetBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const  
+{  
+    Super::GetLifetimeReplicatedProps(OutLifetimeProps);  
+    DOREPLIFETIME_CONDITION_NOTIFY(UGDAttributeSetBase, Health, COND_None, REPNOTIFY_Always);}  
+```
+
+
+`REPNOTIFY_Always` 指示 `OnRep` 函数在本地值已经等于从服务器下传的值时触发（由于预测）。默认情况下，如果本地值与从服务器下传的值相同，则不会触发 `OnRep` 函数。
+
+如果 `Attribute` 不像 `Meta Attribute` 那样进行复制，那么可以跳过 `OnRep` 和 `GetLifetimeReplicatedProps` 这两个步骤。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.4.4 Initializing Attributes
+有多种方法可以初始化 `Attributes`（设置它们的 `BaseValue` 以及因此而设置的 `CurrentValue` 为某个初始值）。Epic 推荐使用即时 `GameplayEffect`。这也是样本项目中采用的方法。
+
+参见样本项目中的 `GE_HeroAttributes` 蓝图，了解如何创建一个即时 `GameplayEffect` 来初始化 `Attributes`。这个 `GameplayEffect` 的应用发生在 C++ 中。
+
+如果你在定义 `Attributes` 时使用了 `ATTRIBUTE_ACCESSORS` 宏，那么对于每个 `Attribute`，都会自动生成一个初始化函数在 `AttributeSet` 上，你可以在 C++ 中随时调用这些函数。
+
+```c++  
+// `InitHealth(float InitialValue)` 是为使用 `ATTRIBUTE_ACCESSORS` 宏定义的 `Attribute` `'Health'` 自动生成的初始化函数。  
+AttributeSet->InitHealth(100.0f);  
+```
+
+参见 `AttributeSet.h` 以了解更多初始化 `Attributes` 的方法。
+
+**注意：** 在 4.24 之前，`FAttributeSetInitterDiscreteLevels` 无法与 `FGameplayAttributeData` 一起工作。它是在 `Attributes` 作为原始浮点数时创建的，并且会抱怨 `FGameplayAttributeData` 不是“纯旧数据”（`POD`）。这个问题在 4.24 版本中已修复 [链接](https://issues.unrealengine.com/issue/UE-76557)。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.4.5 PreAttributeChange()
+`PreAttributeChange(const FGameplayAttribute& Attribute, float& NewValue)` 是 `AttributeSet` 中的主要函数之一，用于在更改发生前响应 `Attribute` 的 `CurrentValue` 变化。这是通过引用参数 `NewValue` 来限制传入的 `CurrentValue` 变化的理想位置。
+
+例如，为了限制移动速度修正值，样本项目是这样做的：
+
+```c++  
+if (Attribute == GetMoveSpeedAttribute())  
+{  
+    // 减速不能少于 150 个单位，也不能加速超过 1000 个单位    
+    NewValue = FMath::Clamp<float>(NewValue, 150, 1000);}  
+```
+
+`GetMoveSpeedAttribute()` 函数是由我们添加到 `AttributeSet.h` 中的宏块创建的（[定义属性](#concepts-as-attributes)）。
+
+这会在任何 `Attribute` 发生变化时触发，无论是使用 `Attribute` 设置器（由 `AttributeSet.h` 中的宏块定义（[定义属性](#concepts-as-attributes)））还是使用 [`GameplayEffects`](#concepts-ge)。
+
+**注意：** 在这里进行的任何限制都不会永久改变 `ASC` 上的修正值。它只会改变查询修正值时返回的值。这意味着任何重新计算所有修正值得到的 `CurrentValue` 的操作，如使用 [`GameplayEffectExecutionCalculations`](#concepts-ge-ec) 和 [`ModifierMagnitudeCalculations`](#concepts-ge-mmc)，都需要再次实现限制。
+
+**注意：** Epic 对 `PreAttributeChange()` 的注释说明不建议在此处处理游戏玩法事件，而是主要用于限制。推荐处理 `Attribute` 变化时的游戏玩法事件的位置是 `UAbilitySystemComponent::GetGameplayAttributeValueChangeDelegate(FGameplayAttribute Attribute)`（[响应属性变化](#concepts-a-changes)）。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.4.6 PostGameplayEffectExecute()
+`PostGameplayEffectExecute(const FGameplayEffectModCallbackData & Data)` 只在瞬时 `GameplayEffect` 引起 `Attribute` 的 `BaseValue` 发生变化后触发。当 `Attribute` 从 `GameplayEffect` 发生变化时，这是一个有效的进一步操作 `Attribute` 的位置。
+
+例如，在样本项目中，我们会在这里从健康 `Attribute` 中减去最终伤害 `Meta Attribute`。如果有护盾 `Attribute`，我们会在从健康中减去剩余伤害之前先从中减去伤害。样本项目还利用此位置来应用被击反应动画、显示浮动伤害数字、以及给击杀者分配经验值和金币奖励。按照设计，伤害 `Meta Attribute` 总是通过瞬时 `GameplayEffect` 传递，而不会通过 `Attribute` 设置器。
+
+其他仅通过瞬时 `GameplayEffects` 改变其 `BaseValue` 的 `Attributes`，如法力值和耐力值，也可以在这里限制到它们的最大值对应的 `Attributes`。
+
+**注意：** 当 `PostGameplayEffectExecute()` 被调用时，对 `Attribute` 的更改已经发生，但尚未向客户端复制，因此在这里限制值不会导致两次网络更新。客户端只会在限制之后收到更新。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.4.7 OnAttributeAggregatorCreated()
+`OnAttributeAggregatorCreated(const FGameplayAttribute& Attribute, FAggregator* NewAggregator)` 在为此集合中的 `Attribute` 创建 `Aggregator` 时触发。它允许自定义设置 [`FAggregatorEvaluateMetaData`](https://docs.unrealengine.com/en-US/API/Plugins/GameplayAbilities/FAggregatorEvaluateMetaData/index.html)。`AggregatorEvaluateMetaData` 由 `Aggregator` 使用来根据应用于它的所有 [`Modifiers`](#concepts-ge-mods) 评估 `Attribute` 的 `CurrentValue`。默认情况下，`AggregatorEvaluateMetaData` 仅由 `Aggregator` 使用来确定哪些 `Modifiers` 符合条件，例如 `MostNegativeMod_AllPositiveMods` 允许所有正向 `Modifiers` 但限制负向 `Modifiers` 仅为最负的那个。Paragon 就使用了这种方法，只允许最负的移动速度减速效果应用于玩家，无论他们身上有多少减速效果，同时应用所有正向的移动速度增益。不符合条件的 `Modifiers` 仍然存在于 `ASC` 上，只是没有被聚合到最终的 `CurrentValue` 中。一旦条件发生变化，它们有可能符合条件，例如如果最负的 `Modifier` 到期，下一个最负的 `Modifier`（如果存在的话）就会符合条件。
+
+要在只允许最负 `Modifier` 和所有正向 `Modifiers` 的例子中使用 `AggregatorEvaluateMetaData`：
+
+```c++  
+virtual void OnAttributeAggregatorCreated(const FGameplayAttribute& Attribute, FAggregator* NewAggregator) const override;  
+```  
+  
+```c++  
+void UGSAttributeSetBase::OnAttributeAggregatorCreated(const FGameplayAttribute& Attribute, FAggregator* NewAggregator) const  
+{  
+    Super::OnAttributeAggregatorCreated(Attribute, NewAggregator);  
+    if (!NewAggregator)    {       return;    }  
+    if (Attribute == GetMoveSpeedAttribute())    {       NewAggregator->EvaluationMetaData = &FAggregatorEvaluateMetaDataLibrary::MostNegativeMod_AllPositiveMods;    }}  
+```
+
+你应该将自定义的 `AggregatorEvaluateMetaData` 作为静态变量添加到 `FAggregatorEvaluateMetaDataLibrary` 中。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 4.5 Gameplay Effects
+
+#### 4.5.1 Gameplay Effect Definition
+[`GameplayEffects`](https://docs.unrealengine.com/en-US/API/Plugins/GameplayAbilities/UGameplayEffect/index.html) (`GE`) 是能力通过自身和其他对象改变 [`Attributes`](#concepts-a) 和 [`GameplayTags`](#concepts-gt) 的载体。它们可以引起立即的 `Attribute` 变化，如伤害或治疗，或者施加长期的状态增益/减益，如移动速度提升或眩晕。`UGameplayEffect` 类旨在成为一个 **仅数据** 类，用来定义单一的游戏效果。不应向 `GameplayEffects` 添加额外的逻辑。通常设计师会创建许多 `UGameplayEffect` 的蓝图子类。
+
+`GameplayEffects` 通过 [`Modifiers`](#concepts-ge-mods) 和 [`Executions` (`GameplayEffectExecutionCalculation`)](#concepts-ge-ec) 来改变 `Attributes`。
+
+`GameplayEffects` 有三种持续时间类型：`Instant`（瞬时）、`Duration`（持续时间）和 `Infinite`（无限）。
+
+此外，`GameplayEffects` 还可以添加/执行 [`GameplayCues`](#concepts-gc)。一个 `Instant`（瞬时）`GameplayEffect` 将会调用 `GameplayCue` 的 `GameplayTags` 的 `Execute` 方法，而 `Duration`（持续时间）或 `Infinite`（无限）`GameplayEffect` 将会调用 `GameplayCue` 的 `GameplayTags` 的 `Add` 和 `Remove` 方法。
+
+| 持续时间类型     | GameplayCue 事件 | 何时使用                                                                                                                                   |
+| ---------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `Instant`  | Execute        | 用于对 `Attribute` 的 `BaseValue` 进行立即且永久的更改。`GameplayTags` 不会被应用，即使是一帧的时间也不会。                                                             |
+| `Duration` | 添加 & 移除        | 用于对 `Attribute` 的 `CurrentValue` 进行临时更改，并应用将在 `GameplayEffect` 到期或手动移除时移除的 `GameplayTags`。持续时间在 `UGameplayEffect` 类/蓝图中指定。             |
+| `Infinite` | 添加 & 移除        | 用于对 `Attribute` 的 `CurrentValue` 进行临时更改，并应用将在 `GameplayEffect` 被移除时移除的 `GameplayTags`。这些 `GameplayEffects` 本身永远不会到期，必须由能力或 `ASC` 手动移除。 |
+
+`Duration` 和 `Infinite` `GameplayEffects` 有一个选项可以应用 `Periodic Effects`，这些效果会每隔 `X` 秒（由其 `Period` 定义）应用其 `Modifiers` 和 `Executions`。`Periodic Effects` 在更改 `Attribute` 的 `BaseValue` 和 `Executing` `GameplayCues` 方面被视为 `Instant` `GameplayEffects`。这对于随时间造成伤害（DOT）类型的效果很有用。**注意：** `Periodic Effects` 不能被 [预测](#concepts-p)。
+
+`Duration` 和 `Infinite` `GameplayEffects` 可以在应用后暂时关闭和开启，如果它们的 `Ongoing Tag Requirements`（[Gameplay Effect Tags](#concepts-ge-tags)）不满足/满足的话。关闭 `GameplayEffect` 会移除其 `Modifiers` 和已应用的 `GameplayTags` 的效果，但不会移除 `GameplayEffect` 本身。重新开启 `GameplayEffect` 会重新应用其 `Modifiers` 和 `GameplayTags`。
+
+如果你需要手动重新计算 `Duration` 或 `Infinite` `GameplayEffect` 的 `Modifiers`（例如你有一个 `MMC` 使用的数据不是来自 `Attributes`），你可以调用 `UAbilitySystemComponent::ActiveGameplayEffects.SetActiveGameplayEffectLevel(FActiveGameplayEffectHandle ActiveHandle, int32 NewLevel)`，其中 `NewLevel` 与它当前的级别相同，可以通过 `UAbilitySystemComponent::ActiveGameplayEffects.GetActiveGameplayEffect(ActiveHandle).Spec.GetLevel()` 获取。基于支持 `Attributes` 的 `Modifiers` 会在这些支持的 `Attributes` 更新时自动更新。`SetActiveGameplayEffectLevel()` 中用于更新 `Modifiers` 的关键功能是：
+
+```C++  
+MarkItemDirty(Effect);  
+Effect.Spec.CalculateModifierMagnitudes();  
+// 私有函数，否则我们会调用这三个函数，而不需要将级别设置为原来的级别  
+UpdateAllAggregatorModMagnitudes(Effect);  
+```
+
+`GameplayEffects` 通常不会实例化。当一个能力或 `ASC` 想要应用一个 `GameplayEffect` 时，它会从 `GameplayEffect` 的 `ClassDefaultObject` 创建一个 [`GameplayEffectSpec`](#concepts-ge-spec)。成功应用的 `GameplayEffectSpecs` 然后会被添加到一个新的结构体 `FActiveGameplayEffect` 中，这是 `ASC` 在一个特殊的容器结构体 `ActiveGameplayEffects` 中跟踪的内容。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.5.2 应用 Gameplay Effects
+`GameplayEffects` 可以通过多种方式应用，包括来自 [`GameplayAbilities`](#concepts-ga) 和 `ASC` 上的函数，通常采用 `ApplyGameplayEffectTo` 的形式。不同的函数本质上是便利函数，最终会调用 `UAbilitySystemComponent::ApplyGameplayEffectSpecToSelf()` 到 `Target` 上。
+
+为了在 `GameplayAbility` 之外应用 `GameplayEffects`，例如从一个投射物，你需要获取 `Target` 的 `ASC` 并使用其中一个函数来 `ApplyGameplayEffectToSelf`。
+
+你可以通过绑定到 `ASC` 的委托来监听任何 `Duration` 或 `Infinite` `GameplayEffects` 应用到 `ASC` 上的时刻：
+
+```c++  
+AbilitySystemComponent->OnActiveGameplayEffectAddedDelegateToSelf.AddUObject(this, &APACharacterBase::OnActiveGameplayEffectAddedCallback);  
+```  
+
+回调函数:  
+
+```c++  
+virtual void OnActiveGameplayEffectAddedCallback(UAbilitySystemComponent* Target, const FGameplayEffectSpec& SpecApplied, FActiveGameplayEffectHandle ActiveHandle);  
+```
+
+服务器总是会调用这个函数，不论复制模式如何。自主代理（autonomous proxy）仅在 `Full` 和 `Mixed` 复制模式下为复制的 `GameplayEffects` 调用此函数。模拟代理（simulated proxy）仅在 `Full` [复制模式](#concepts-asc-rm)下调用此函数。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.5.3 移除 Gameplay Effects
+`GameplayEffects` 可以通过多种方式移除，包括来自 [`GameplayAbilities`](#concepts-ga) 和 `ASC` 上的函数，通常采用 `RemoveActiveGameplayEffect` 的形式。不同的函数本质上是便利函数，最终会调用 `FActiveGameplayEffectsContainer::RemoveActiveEffects()` 到 `Target` 上。
+
+为了在 `GameplayAbility` 之外移除 `GameplayEffects`，你需要获取 `Target` 的 `ASC` 并使用其中一个函数来 `RemoveActiveGameplayEffect`。
+
+你可以通过绑定到 `ASC` 的委托来监听任何 `Duration` 或 `Infinite` `GameplayEffects` 从 `ASC` 上被移除的时刻：
+
+```c++  
+AbilitySystemComponent->OnAnyGameplayEffectRemovedDelegate().AddUObject(this, &APACharacterBase::OnRemoveGameplayEffectCallback);  
+```  
+
+回调函数:
+
+```c++  
+virtual void OnRemoveGameplayEffectCallback(const FActiveGameplayEffect& EffectRemoved);  
+```
+
+服务器总是会调用这个函数，不论复制模式如何。自主代理（autonomous proxy）仅在 `Full` 和 `Mixed` 复制模式下为复制的 `GameplayEffects` 调用此函数。模拟代理（simulated proxy）仅在 `Full` [复制模式](#concepts-asc-rm)下调用此函数。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.5.4 Gameplay Effect Modifiers（游戏玩法效果修改器）
+`Modifiers` 改变一个 `Attribute`，并且是唯一可以 [预测性](#concepts-p) 地改变一个 `Attribute` 的方式。一个 `GameplayEffect` 可以拥有零个或多个 `Modifiers`。每个 `Modifier` 负责通过指定的操作只改变一个 `Attribute`。
+
+| 操作    | 描述                                                                                                         |
+| ------- | ------------------------------------------------------------------------------------------------------------------- |
+| `Add`   | 将结果加到 `Modifier` 指定的 `Attribute` 上。使用负值进行减法运算。                                                |
+| `Multiply` | 将结果乘到 `Modifier` 指定的 `Attribute` 上。                                                                      |
+| `Divide` | 用结果除以 `Modifier` 指定的 `Attribute`。                                                                         |
+| `Override` | 用结果覆盖 `Modifier` 指定的 `Attribute`。                                                                        |
+
+`Attribute` 的 `CurrentValue` 是其所有 `Modifiers` 加上 `BaseValue` 的聚合结果。`Modifiers` 如何聚合的公式定义在 `GameplayEffectAggregator.cpp` 文件中的 `FAggregatorModChannel::EvaluateWithBase` 函数里：
+
+```c++  
+((InlineBaseValue + Additive) * Multiplicitive) / Division  
+```
+
+任何 `Override` 类型的 `Modifiers` 都会用最后应用的 `Modifier` 来覆盖最终值。
+
+**注意：** 对于基于百分比的变化，请确保使用 `Multiply` 操作，以便在加法之后发生。
+
+**注意：** [预测](#concepts-p) 在处理百分比变化时可能会出现问题。
+
+有四种类型的 `Modifiers`：Scalable Float（可缩放浮点数）、Attribute Based（基于属性）、Custom Calculation Class（自定义计算类）和 Set By Caller（由调用者设置）。它们都会生成某个浮点数值，然后根据 `Modifier` 的操作来改变指定的 `Attribute`。
+
+| `Modifier` 类型            | 描述                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Scalable Float`           | `FScalableFloats` 是一种结构，它可以指向一个 Data Table，其中变量作为行，等级作为列。Scalable Floats 会自动读取在当前等级（或在 [`GameplayEffectSpec`](#concepts-ge-spec) 上被覆盖的不同等级）下的指定表格行的值。这个值可以通过系数进一步调整。如果没有指定 Data Table/Row，则将其视为 1，因此系数可以用来在所有等级上硬编码单个值。![ScalableFloat](https://github.com/tranek/GASDocumentation/raw/master/Images/scalablefloats.png)                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `Attribute Based`          | `Attribute Based` 类型的 `Modifiers` 采用 `Source`（创建了 `GameplayEffectSpec` 的实体）或 `Target`（接收了 `GameplayEffectSpec` 的实体）上的支持 `Attribute` 的 `CurrentValue` 或 `BaseValue`，并通过系数以及系数前后的加法进一步修改它。`Snapshotting` 意味着支持的 `Attribute` 在创建 `GameplayEffectSpec` 时被捕获，而没有快照则意味着 `Attribute` 在应用 `GameplayEffectSpec` 时被捕获。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `Custom Calculation Class` | `Custom Calculation Class` 为复杂的 `Modifiers` 提供最大的灵活性。这种 `Modifier` 接受一个 [`ModifierMagnitudeCalculation`](#concepts-ge-mmc) 类，并可以通过系数以及系数前后的加法进一步操纵生成的浮点值。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `Set By Caller`            | `SetByCaller` 类型的 `Modifiers` 是在运行时由能力或其他创建 `GameplayEffectSpec` 的实体在 `GameplayEffectSpec` 上设置的值。例如，如果你想根据玩家按住按钮为能力充电的时间长短来设置伤害，就可以使用 `SetByCaller`。`SetByCallers` 实质上是 `TMap<FGameplayTag, float>`，存在于 `GameplayEffectSpec` 上。`Modifier` 只是告诉 `Aggregator` 查找与提供的 `GameplayTag` 关联的 `SetByCaller` 值。`Modifiers` 使用的 `SetByCallers` 只能使用 `GameplayTag` 版本的概念。这里禁用了 `FName` 版本。如果 `Modifier` 设置为 `SetByCaller`，但在 `GameplayEffectSpec` 上不存在具有正确 `GameplayTag` 的 `SetByCaller`，游戏将抛出运行时错误并返回 0 的值。这在 `Divide` 操作的情况下可能会导致问题。有关如何使用 `SetByCallers` 的更多信息，请参见 [`SetByCallers`](#concepts-ge-spec-setbycaller)。 |
+
+**[⬆ Back to Top](#table-of-contents)**
+
+##### 4.5.4.1 Multiply and Divide Modifiers（乘法和除法修饰符）
+默认情况下，在将所有 `Multiply` 和 `Divide` 类型的 `Modifiers` 乘入或除入 `Attribute` 的 `BaseValue` 之前，会先将它们加在一起。
+
+```c++  
+float FAggregatorModChannel::EvaluateWithBase(float InlineBaseValue, const FAggregatorEvaluateParameters& Parameters) const  
+{  
+    ...    float Additive = SumMods(Mods[EGameplayModOp::Additive], GameplayEffectUtilities::GetModifierBiasByModifierOp(EGameplayModOp::Additive), Parameters);    float Multiplicitive = SumMods(Mods[EGameplayModOp::Multiplicitive], GameplayEffectUtilities::GetModifierBiasByModifierOp(EGameplayModOp::Multiplicitive), Parameters);    float Division = SumMods(Mods[EGameplayModOp::Division], GameplayEffectUtilities::GetModifierBiasByModifierOp(EGameplayModOp::Division), Parameters);    ...    return ((InlineBaseValue + Additive) * Multiplicitive) / Division;    ...}  
+```  
+  
+```c++  
+float FAggregatorModChannel::SumMods(const TArray<FAggregatorMod>& InMods, float Bias, const FAggregatorEvaluateParameters& Parameters)  
+{  
+    float Sum = Bias;  
+    for (const FAggregatorMod& Mod : InMods)    {       if (Mod.Qualifies())       {          Sum += (Mod.EvaluatedMagnitude - Bias);       }    }  
+    return Sum;}  
+```
+
+这个公式会导致一些意外的结果。首先，这个公式在将所有 `Modifiers` 乘入或除入 `BaseValue` 之前，会先将它们加在一起。大多数人会期望这些 `Modifiers` 相乘或相除。例如，如果有两个 `Multiply` 类型的 `Modifiers` 其值为 `1.5`，大多数人会期望 `BaseValue` 被乘以 `1.5 x 1.5 = 2.25`。相反，这个公式将 `1.5` 加在一起，将 `BaseValue` 乘以 `2`（`50% 增加 + 另一个 50% 增加 = 100% 增加`）。这是来自 `GameplayPrediction.h` 的例子：对 `500` 的基础速度施加 `10%` 的加速效果将是 `550`。再施加另一个 `10%` 的加速效果，速度将是 `600`。
+
+其次，这个公式有一些未记录的规定，关于哪些值可以使用，因为它是针对 Paragon 设计的。
+
+`Multiply` 和 `Divide` 类型的乘法加法公式的规则：
+* `(最多有一个值 < 1) 并且 (任意数量的值 [1, 2))`
+* `或者 (一个值 >= 2)`
+
+公式中的 `Bias` 基本上是从范围 `[1, 2)` 内的数字中减去整数部分。第一个 `Modifier` 的 `Bias` 从循环开始前设置为 `Bias` 的起始 `Sum` 值中减去，这就是为什么单独的任何值都可以工作，以及为什么一个小于 `1` 的值可以与范围 `[1, 2)` 内的数字一起工作。
+
+一些 `Multiply` 的示例：
+Multiplier: `0.5`  
+`1 + (0.5 - 1) = 0.5`，正确
+
+Multiplier: `0.5, 0.5`  
+`1 + (0.5 - 1) + (0.5 - 1) = 0`，不正确，期望值为 `1`？多个小于 `1` 的值对于加法乘数来说没有意义。Paragon 设计时仅使用了 [最大负值作为 `Multiply` 类型 `Modifiers` 的值](#cae-nonstackingge)，因此最多只会有一个小于 `1` 的值乘入 `BaseValue`。
+
+Multiplier: `1.1, 0.5`  
+`1 + (0.5 - 1) + (1.1 - 1) = 0.6`，正确
+
+Multiplier: `5, 5`  
+`1 + (5 - 1) + (5 - 1) = 9`，不正确，期望值为 `10`。始终是 `Modifiers` 的总和减去 `Modifiers` 的数量加上 `1`。
+
+许多游戏希望他们的 `Multiply` 和 `Divide` 类型的 `Modifiers` 在应用于 `BaseValue` 之前能够相乘或相除。
+为了实现这一点，你需要 **修改引擎代码** 中的 `FAggregatorModChannel::EvaluateWithBase()` 函数。
+
+```c++  
+float FAggregatorModChannel::EvaluateWithBase(float InlineBaseValue, const FAggregatorEvaluateParameters& Parameters) const  
+{  
+    ...    float Multiplicitive = MultiplyMods(Mods[EGameplayModOp::Multiplicitive], Parameters);    float Division = MultiplyMods(Mods[EGameplayModOp::Division], Parameters);    ...  
+    return ((InlineBaseValue + Additive) * Multiplicitive) / Division;}  
+```  
+  
+```c++  
+float FAggregatorModChannel::MultiplyMods(const TArray<FAggregatorMod>& InMods, const FAggregatorEvaluateParameters& Parameters)  
+{  
+    float Multiplier = 1.0f;  
+    for (const FAggregatorMod& Mod : InMods)    {       if (Mod.Qualifies())       {          Multiplier *= Mod.EvaluatedMagnitude;       }    }  
+    return Multiplier;}  
+```
+
+**[⬆ Back to Top](#table-of-contents)**
+
+##### 4.5.4.2 Gameplay Tags on Modifiers
+`SourceTags` 和 `TargetTags` 可以为每个 [Modifier](#concepts-ge-mods) 设置。它们的工作方式与 `GameplayEffect` 的 [`Application Tag 要求`](#concepts-ge-tags) 相同。因此，这些标签只在效果应用时考虑。例如，在具有周期性的无限效果的情况下，这些标签只在效果首次应用时考虑，而不是在每次周期执行时考虑。
+
+`Attribute Based` 类型的 `Modifiers` 也可以设置 `SourceTagFilter` 和 `TargetTagFilter`。在确定 `Attribute Based` 类型 `Modifier` 的属性大小时，这些过滤器用于排除某些对该属性的 `Modifiers`。源或目标没有过滤器中所有标签的 `Modifiers` 将被排除。
+
+这意味着具体而言：源 ASC 和目标 ASC 的标签被 `GameplayEffects` 捕获。当创建 `GameplayEffectSpec` 时捕获源 ASC 的标签，而在效果执行时捕获目标 ASC 的标签。在确定无限或持续效果的 `Modifier` 是否“符合条件”（即其 `Aggregator` 符合条件）并且设置了这些过滤器时，将捕获的标签与过滤器进行比较。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.5.5 Stacking Gameplay Effects
+默认情况下，`GameplayEffects` 会在应用时创建新的 `GameplayEffectSpec` 实例，并不会关心之前已存在的实例。`GameplayEffects` 可以设置为堆叠模式，在这种模式下，不是添加一个新的 `GameplayEffectSpec` 实例，而是改变当前存在的 `GameplayEffectSpec` 的堆叠计数。堆叠仅适用于 `Duration` 和 `Infinite` 类型的 `GameplayEffects`。
+
+有两种类型的堆叠：按源堆叠 (Aggregate by Source) 和按目标堆叠 (Aggregate by Target)。
+
+| Stacking Type       | Description                                                                                                                          |  
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |  
+| Aggregate by Source | There is a separate instance of stacks per Source `ASC` on the Target. Each Source can apply X amount of stacks.                     |  
+| Aggregate by Target | There is only one instance of stacks on the Target regardless of Source. Each Source can apply a stack up to the shared stack limit. |
+
+堆叠还具有过期、持续时间刷新和周期重置的策略。在 `GameplayEffect` 蓝图中，这些策略有帮助性的悬停提示。
+
+示例项目包括一个自定义蓝图节点，用于监听 `GameplayEffect` 的堆叠变化。HUD UMG 小部件使用它来更新玩家拥有的被动护甲堆叠的数量。这个 `AsyncTask` 会一直存在，直到手动调用 `EndTask()`，我们在 UMG 小部件的 `Destruct` 事件中执行这一操作。参见 `AsyncTaskEffectStackChanged.h/cpp`。
+
+![监听 GameplayEffect 堆栈更改 BP 节点](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/gestackchange.png)
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.5.6 Granted Abilities（授予能力）
+`GameplayEffects` 可以为 `ASCs` 授予新的 [`GameplayAbilities`](#concepts-ga)。只有 `Duration` 和 `Infinite` 类型的 `GameplayEffects` 可以授予能力。
+
+一个常见的用途是在你想迫使另一个玩家做某事时，比如通过击退或拉拽使他们移动。你可以对他们施加一个 `GameplayEffect`，该效果授予他们一个自动激活的能力（参见 [Passive Abilities](#concepts-ga-activating-passive) 了解如何在授予能力时自动激活它），该能力会对他们执行所需的动作。
+
+设计师可以选择 `GameplayEffect` 授予哪些能力、授予时的等级、绑定的 [输入](#concepts-ga-input) 以及授予能力的移除策略。
+
+| 移除策略             | 描述                                                                                                                                                                     |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 立即取消能力 | 当授予该能力的 `GameplayEffect` 从目标移除时，授予的能力会被立即取消并移除。                                                   |
+| 结束后移除能力 | 允许授予的能力完成后再从目标移除。                                                                                                   |
+| 什么都不做                 | 授予的能力不受从目标移除授予 `GameplayEffect` 的影响。目标永久拥有该能力，直到后来手动移除。 |
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.5.7 Gameplay Effect Tags
+`GameplayEffects` 携带多个 [`GameplayTagContainers`](#concepts-gt)。设计师将为每个类别编辑 `Added` 和 `Removed` 的 `GameplayTagContainers`，并在编译时显示在 `Combined` `GameplayTagContainer` 中。`Added` 标签是此 `GameplayEffect` 添加的新标签，而其父类之前没有这些标签。`Removed` 标签是父类有但此子类没有的标签。
+
+| 类别                          | 描述                                                                                                                                                                                                                                                                                                                                                                        |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GameplayEffect` 资产标签        | `GameplayEffect` 所具有的标签。它们本身不执行任何功能，仅用于描述 `GameplayEffect`。                                                                                                                                                                                                                                        |
+| 授予的标签                      | 存在于 `GameplayEffect` 上但也给予被此 `GameplayEffect` 应用到的 `ASC` 的标签。当 `GameplayEffect` 被移除时，这些标签也会从 `ASC` 上移除。这仅适用于 `Duration` 和 `Infinite` 类型的 `GameplayEffects`。                                                                                                                             |
+| 持续标签要求                    | 一旦应用，这些标签决定了 `GameplayEffect` 是处于开启还是关闭状态。一个 `GameplayEffect` 即使处于关闭状态仍然可以被应用。如果一个 `GameplayEffect` 因未能满足持续标签要求而关闭，但随后满足了这些要求，则 `GameplayEffect` 会再次开启并重新应用其修改器。这仅适用于 `Duration` 和 `Infinite` 类型的 `GameplayEffects`。 |
+| 应用标签要求                    | 决定 `GameplayEffect` 是否可以应用于目标的标签。如果这些要求未得到满足，则 `GameplayEffect` 不会被应用。                                                                                                                                                                                                                      |
+| 移除带有标签的 `GameplayEffects` | 当此 `GameplayEffect` 成功应用时，目标上的任何在其 `Asset Tags` 或 `Granted Tags` 中具有这些标签的 `GameplayEffects` 将被移除。                                                                                                                                                                                            |
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.5.8 Immunity（免疫）
+`GameplayEffects` 可以授予免疫能力，有效地阻止其他 `GameplayEffects` 的应用，基于 [`GameplayTags`](#concepts-gt)。虽然可以通过其他方式如 `Application Tag Requirements` 来实现免疫，但使用此系统提供了当 `GameplayEffects` 因免疫而被阻止时的委托 `UAbilitySystemComponent::OnImmunityBlockGameplayEffectDelegate`。
+
+`GrantedApplicationImmunityTags` 检查源 `ASC`（包括源能力的 `AbilityTags` 中的标签，如果有的话）是否具有任何指定的标签。这是一种根据角色或来源的标签来提供对所有 `GameplayEffects` 的免疫的方法。
+
+`Granted Application Immunity Query` 检查传入的 `GameplayEffectSpec` 是否匹配任何查询以阻止或允许其应用。
+
+这些查询在 `GameplayEffect` 蓝图中有帮助性的悬停提示。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.5.9 Gameplay Effect Spec
+`GameplayEffectSpec`（简称 `GESpec`）可以看作是 `GameplayEffects` 的实例化。它们持有指向所代表的 `GameplayEffect` 类的引用、创建时的等级以及创建者的信息。与 `GameplayEffects` 不同，`GameplayEffectSpecs` 可以在运行时自由创建和修改，在应用前。当应用一个 `GameplayEffect` 时，会从 `GameplayEffect` 创建一个 `GameplayEffectSpec`，并将其实际应用于目标。
+
+`GameplayEffectSpecs` 使用 `UAbilitySystemComponent::MakeOutgoingSpec()` 从 `GameplayEffects` 创建，这是一个 `BlueprintCallable` 方法。`GameplayEffectSpecs` 不必立即应用。通常会将一个 `GameplayEffectSpec` 传递给从能力创建的投射物，以便投射物稍后可以将其应用于它击中的目标。当 `GameplayEffectSpecs` 成功应用时，它们会返回一个新的结构体 `FActiveGameplayEffect`。
+
+值得注意的 `GameplayEffectSpec` 内容包括：
+* 创建此 `GameplayEffect` 的 `GameplayEffect` 类。
+* 此 `GameplayEffectSpec` 的等级。通常与创建 `GameplayEffectSpec` 的能力的等级相同，但也可以不同。
+* 此 `GameplayEffectSpec` 的持续时间。默认为 `GameplayEffect` 的持续时间，但可以不同。
+* 对于周期性效果，此 `GameplayEffectSpec` 的周期。默认为 `GameplayEffect` 的周期，但可以不同。
+* 此 `GameplayEffectSpec` 的当前堆叠数量。堆叠限制位于 `GameplayEffect` 上。
+* [`GameplayEffectContextHandle`](#concepts-ge-context) 告诉我们谁创建了此 `GameplayEffectSpec`。
+* 在 `GameplayEffectSpec` 创建时由于快照捕获的 `Attributes`。
+* 除了 `GameplayEffect` 授予的 `GameplayTags` 外，`GameplayEffectSpec` 还授予目标的 `DynamicGrantedTags`。
+* 除了 `GameplayEffect` 拥有的 `AssetTags` 外，`GameplayEffectSpec` 还拥有的 `DynamicAssetTags`。
+* `SetByCaller` `TMaps`。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+##### 4.5.9.1 SetByCallers
+`SetByCallers` 允许 `GameplayEffectSpec` 携带与 `GameplayTag` 或 `FName` 关联的浮点值。这些值存储在各自的 `TMaps` 中：`TMap<FGameplayTag, float>` 和 `TMap<FName, float>`。这些值可以用作 `GameplayEffect` 上的 `Modifiers` 或作为通用手段来传递浮点值。通常会在能力内部生成数值数据，并通过 `SetByCallers` 传递给 [`GameplayEffectExecutionCalculations`](#concepts-ge-ec) 或 [`ModifierMagnitudeCalculations`](#concepts-ge-mmc)。
+
+| `SetByCaller` 用途 | 注意事项                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Modifiers`       | 必须在 `GameplayEffect` 类中提前定义。只能使用 `GameplayTag` 版本。如果在 `GameplayEffect` 类中定义了一个 `SetByCaller`，但 `GameplayEffectSpec` 没有对应的标签和浮点值对，那么在应用 `GameplayEffectSpec` 时游戏会出现运行时错误并返回 0。这对于 `Divide` 操作来说是一个潜在的问题。参见 [`Modifiers`](#concepts-ge-mods)。 |
+| 其他地方           | 不需要在任何地方提前定义。读取 `GameplayEffectSpec` 上不存在的 `SetByCaller` 可以返回开发者定义的默认值，并可选地给出警告。                                                                                                                                                                                                                                                                                                       |
+
+为了在 Blueprint 中分配 `SetByCaller` 值，使用你需要的版本（`GameplayTag` 或 `FName`）的 Blueprint 节点：
+
+![分配 SetByCaller](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/setbycaller.png)
+
+为了在 Blueprint 中读取 `SetByCaller` 值，你需要在你的 Blueprint 库中创建自定义节点。
+
+为了在 C++ 中分配 `SetByCaller` 值，使用你需要的版本（`GameplayTag` 或 `FName`）的函数：
+
+```c++  
+void FGameplayEffectSpec::SetSetByCallerMagnitude(FName DataName, float Magnitude);  
+```  
+  
+```c++  
+void FGameplayEffectSpec::SetSetByCallerMagnitude(FGameplayTag DataTag, float Magnitude);  
+```
+
+要在 C++ 中读取 `SetByCaller` 值，使用你需要的版本（`GameplayTag` 或 `FName`）的函数：
+
+```c++  
+float GetSetByCallerMagnitude(FName DataName, bool WarnIfNotFound = true, float DefaultIfNotFound = 0.f) const;  
+```  
+  
+```c++  
+float GetSetByCallerMagnitude(FGameplayTag DataTag, bool WarnIfNotFound = true, float DefaultIfNotFound = 0.f) const;  
+```
+
+我建议使用 `GameplayTag` 版本而非 `FName` 版本。这可以在 Blueprint 中防止拼写错误。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.5.10 Gameplay Effect Context
+`GameplayEffectContext` 结构体包含了关于 `GameplayEffectSpec` 的发起者和 [`TargetData`](#concepts-targeting-data) 的信息。这也是一个很好的结构体，可以对其进行子类化以在诸如 [`ModifierMagnitudeCalculations`](#concepts-ge-mmc) / [`GameplayEffectExecutionCalculations`](#concepts-ge-ec)、[`AttributeSets`](#concepts-as) 和 [`GameplayCues`](#concepts-gc) 之间传递任意数据。
+
+为了子类化 `GameplayEffectContext`：
+
+1. 子类化 `FGameplayEffectContext`
+2. 重写 `FGameplayEffectContext::GetScriptStruct()`
+3. 重写 `FGameplayEffectContext::Duplicate()`
+4. 如果你的新数据需要复制，则重写 `FGameplayEffectContext::NetSerialize()`
+5. 为你的子类实现 `TStructOpsTypeTraits`，就像父结构体 `FGameplayEffectContext` 那样
+6. 在你的 [`AbilitySystemGlobals`](#concepts-asg) 类中重写 `AllocGameplayEffectContext()` 以返回你的子类的新对象
+
+[GASShooter](https://github.com/tranek/GASShooter) 使用了子类化的 `GameplayEffectContext` 来添加 `TargetData`，这些数据可以在 `GameplayCues` 中访问，特别是对于霰弹枪，因为它可以击中多个敌人。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.5.11 Modifier Magnitude Calculation
+`ModifierMagnitudeCalculations` (`ModMagCalc` 或 `MMC`) 是强大的类，用作 `GameplayEffects` 中的 `Modifiers`。它们的功能类似于 `GameplayEffectExecutionCalculations`，但功能较弱，最重要的是它们可以被 [预测](#concepts-p)。它们的唯一目的是从 `CalculateBaseMagnitude_Implementation()` 返回一个浮点值。你可以在 Blueprint 和 C++ 中子类化并重写这个函数。
+
+`MMCs` 可以用于任何持续时间的 `GameplayEffects` —— `Instant`、`Duration`、`Infinite` 或 `Periodic`。
+
+`MMCs` 的强大之处在于它们能够捕获 `GameplayEffect` 的 `Source` 或 `Target` 上任意数量的 `Attributes` 的值，并且可以完全访问 `GameplayEffectSpec` 以读取 `GameplayTags` 和 `SetByCallers`。`Attributes` 可以被快照或不被快照。快照 `Attributes` 在创建 `GameplayEffectSpec` 时被捕获，而非快照 `Attributes` 在应用 `GameplayEffectSpec` 时被捕获，并且当 `Attribute` 改变时会自动更新，适用于 `Infinite` 和 `Duration` 类型的 `GameplayEffects`。捕获 `Attributes` 会重新计算它们的 `CurrentValue`，根据 `ASC` 上现有的 mods 进行。这种重新计算 **不会** 运行 `AbilitySet` 中的 [`PreAttributeChange()`](#concepts-as-preattributechange)，因此任何限制必须再次在这里进行。
+
+| 快照 | Source 或 Target | 在 `GameplayEffectSpec` 上捕获 | 当 `Attribute` 改变时对于 `Infinite` 或 `Duration` 类型的 `GameplayEffect` 自动更新 |
+| ---- | --------------- | ------------------------------ | --------------------------------------------------------------- |
+| Yes  | Source          | 创建                           | No                                                              |
+| Yes  | Target          | 应用                           | No                                                              |
+| No   | Source          | 应用                           | Yes                                                             |
+| No   | Target          | 应用                           | Yes                                                             |
+
+来自 `MMC` 的结果浮点值可以在 `GameplayEffect` 的 `Modifier` 中通过系数以及预系数和后系数加法进一步修改。
+
+一个示例 `MMC` 捕获了 `Target` 的 mana `Attribute`，并从毒效果中减少它，减少的数量取决于 `Target` 拥有多少 mana 以及 `Target` 可能具有的一个标签：
+
+```c++  
+UPAMMC_PoisonMana::UPAMMC_PoisonMana()  
+{  
+  
+    //ManaDef defined in header FGameplayEffectAttributeCaptureDefinition ManaDef; 
+	ManaDef.AttributeToCapture = UPAAttributeSetBase::GetManaAttribute();
+	ManaDef.AttributeSource = EGameplayEffectAttributeCaptureSource::Target;
+	ManaDef.bSnapshot = false;  
+    //MaxManaDef defined in header FGameplayEffectAttributeCaptureDefinition MaxManaDef;    
+    MaxManaDef.AttributeToCapture = UPAAttributeSetBase::GetMaxManaAttribute();
+    MaxManaDef.AttributeSource = EGameplayEffectAttributeCaptureSource::Target;
+    MaxManaDef.bSnapshot = false;  
+    RelevantAttributesToCapture.Add(ManaDef);
+    RelevantAttributesToCapture.Add(MaxManaDef);}  
+  
+float UPAMMC_PoisonMana::CalculateBaseMagnitude_Implementation(const FGameplayEffectSpec & Spec) const  
+{  
+    // 从源和目标收集标签，因为这会影响应该使用哪些增益    
+    const FGameplayTagContainer* SourceTags = Spec.CapturedSourceTags.GetAggregatedTags();
+    const FGameplayTagContainer* TargetTags = Spec.CapturedTargetTags.GetAggregatedTags();
+    FAggregatorEvaluateParameters EvaluationParameters;
+    EvaluationParameters.SourceTags = SourceTags;
+    EvaluationParameters.TargetTags = TargetTags;
+    float Mana = 0.f;    GetCapturedAttributeMagnitude(ManaDef, Spec, EvaluationParameters, Mana);
+    Mana = FMath::Max<float>(Mana, 0.0f);
+    float MaxMana = 0.f;    
+    GetCapturedAttributeMagnitude(MaxManaDef, Spec, EvaluationParameters, MaxMana);    
+    MaxMana = FMath::Max<float>(MaxMana, 1.0f); // 避免除以零 
+    float Reduction = -20.0f;    
+    if (Mana / MaxMana > 0.5f)
+    {
+	    // 如果目标的法力值超过一半，则效果加倍       
+	    Reduction *= 2;
+	}
+	if (TargetTags->HasTagExact(FGameplayTag::RequestGameplayTag(FName("Status.WeakToPoisonMana"))))  
+    {       
+	    // 如果目标对毒药法力的攻击较弱，效果加倍
+	    Reduction *= 2;
+    }        
+    return Reduction;  
+}  
+```
+
+如果你没有在 `MMC` 的构造函数中将 `FGameplayEffectAttributeCaptureDefinition` 添加到 `RelevantAttributesToCapture`，并且尝试捕获 `Attributes`，你会在捕获过程中遇到一个关于缺失 Spec 的错误。如果你不需要捕获 `Attributes`，则不必向 `RelevantAttributesToCapture` 添加任何内容。
+
+**[⬆ Back to Top](#table-of-contents)**
