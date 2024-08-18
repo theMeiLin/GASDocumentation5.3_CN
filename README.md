@@ -1509,18 +1509,122 @@ bool UPAAbilitySystemComponent::SetGameplayEffectDurationHandle(
 
 **[⬆ Back to Top](#table-of-contents)**
 
+#### 4.5.17 在运行时创建动态 Gameplay Effects
+在运行时创建动态 `GameplayEffects` 是一个高级主题。您通常不需要经常这样做。
 
+只有 `Instant` 类型的 `GameplayEffects` 可以从头开始在 C++ 中创建。`Duration` 和 `Infinite` 类型的 `GameplayEffects` 不能在运行时动态创建，因为当它们复制时会查找不存在的 `GameplayEffect` 类定义。为了实现这种功能，您应该像在编辑器中通常所做的那样创建一个原型 `GameplayEffect` 类。然后根据需要在运行时自定义 `GameplayEffectSpec` 实例。
 
+在运行时创建的 `Instant` 类型的 `GameplayEffects` 也可以从 [本地预测](#concepts-p) 的 `GameplayAbility` 内部调用。然而，目前还不清楚动态创建是否会带来副作用。
 
+##### 例子
 
+```c++  
+// 创建一个动态的即时游戏效果来提供赏金  
+UGameplayEffect* GEBounty = NewObject<UGameplayEffect>(GetTransientPackage(), FName(TEXT("Bounty")));  
+GEBounty->DurationPolicy = EGameplayEffectDurationType::Instant;  
+  
+int32 Idx = GEBounty->Modifiers.Num();  
+GEBounty->Modifiers.SetNum(Idx + 2);  
+  
+FGameplayModifierInfo& InfoXP = GEBounty->Modifiers[Idx];  
+InfoXP.ModifierMagnitude = FScalableFloat(GetXPBounty());  
+InfoXP.ModifierOp = EGameplayModOp::Additive;  
+InfoXP.Attribute = UGDAttributeSetBase::GetXPAttribute();  
+  
+FGameplayModifierInfo& InfoGold = GEBounty->Modifiers[Idx + 1];  
+InfoGold.ModifierMagnitude = FScalableFloat(GetGoldBounty());  
+InfoGold.ModifierOp = EGameplayModOp::Additive;  
+InfoGold.Attribute = UGDAttributeSetBase::GetGoldAttribute();  
+  
+Source->ApplyGameplayEffectToSelf(GEBounty, 1.0f, Source->MakeEffectContext());  
+```
 
+第二个示例展示了在一个本地预测的 `GameplayAbility` 内创建的运行时 `GameplayEffect`。使用需谨慎（请参阅代码中的注释）！
 
+```c++  
+UGameplayAbilityRuntimeGE::UGameplayAbilityRuntimeGE()  
+{  
+    NetExecutionPolicy = EGameplayAbilityNetExecutionPolicy::LocalPredicted;
+}  
+  
+void UGameplayAbilityRuntimeGE::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
+												const FGameplayAbilityActorInfo* ActorInfo,
+												const FGameplayAbilityActivationInfo ActivationInfo,
+												const FGameplayEventData* TriggerEventData)  
+{  
+    if (HasAuthorityOrPredictionKey(ActorInfo, &ActivationInfo))    
+    {       
+	    if (!CommitAbility(Handle, ActorInfo, ActivationInfo))       
+	    {          
+		    EndAbility(Handle, ActorInfo, ActivationInfo, true, true);       
+		}  
+		
+       // Create the GE at runtime.       
+       UGameplayEffect* GameplayEffect = 
+	       NewObject<UGameplayEffect>(GetTransientPackage(),TEXT("RuntimeInstantGE"));       
+       GameplayEffect->DurationPolicy = EGameplayEffectDurationType::Instant;// Only instant works with runtime GE.  
+       
+       // Add a simple scalable float modifier, which overrides MyAttribute with 42.       
+       // In real world applications, consume information passed via TriggerEventData. 
+       const int32 Idx = GameplayEffect->Modifiers.Num();       
+       GameplayEffect->Modifiers.SetNum(Idx + 1);       
+       FGameplayModifierInfo& ModifierInfo = GameplayEffect->Modifiers[Idx];
+       ModifierInfo.Attribute.SetUProperty(UMyAttributeSet::GetMyModifiedAttribute());
+       ModifierInfo.ModifierMagnitude = FScalableFloat(42.f);
+       ModifierInfo.ModifierOp = EGameplayModOp::Override;  
+       
+       // Apply the GE.  
+       
+       // Create the GESpec here to avoid the behavior of ASC to create GESpecs from the GE              class default object.       
+       // Since we have a dynamic GE here, this would create a GESpec with the base                      GameplayEffect class, so we       
+       // would lose our modifiers. Attention: It is unknown, if this "hack" done here can               have drawbacks!       
+       // The spec prevents the GE object being collected by the GarbageCollector, since the             GE is a UPROPERTY on the spec.       
+       FGameplayEffectSpec* GESpec = new FGameplayEffectSpec(GameplayEffect, {}, 0.f); // "new", since lifetime is managed by a shared ptr within the handle
+       ApplyGameplayEffectSpecToOwner(Handle, ActorInfo, ActivationInfo, FGameplayEffectSpecHandle(GESpec));    
+    }    
+    EndAbility(Handle, ActorInfo, ActivationInfo, false, false);
+}  
+```
 
+**[⬆ Back to Top](#table-of-contents)**
 
+#### 4.5.18 Gameplay Effect Containers
+Epic 的 [Action RPG 示例项目](https://www.unrealengine.com/marketplace/en-US/product/action-rpg) 实现了一个名为 `FGameplayEffectContainer` 的结构体。这些结构体并未包含在原生 GAS 中，但对于包含 `GameplayEffects` 和 [`TargetData`](#concepts-targeting-data) 非常有用。它自动化了一些努力，例如从 `GameplayEffects` 创建 `GameplayEffectSpecs` 并在其 `GameplayEffectContext` 中设置默认值。在 `GameplayAbility` 中创建 `GameplayEffectContainer` 并将其传递给生成的弹丸非常简单且直观。我没有在附带的示例项目中实现 `GameplayEffectContainers`，以便展示在没有它们的情况下如何在原生 GAS 中工作，但我强烈建议您了解它们，并考虑将它们添加到您的项目中。
 
+要访问 `GameplayEffectContainers` 内的 `GESpecs` 来执行诸如添加 `SetByCallers` 等操作，需要分解 `FGameplayEffectContainer` 并通过其在 `GESpecs` 数组中的索引来访问 `GESpec` 引用。这要求您提前知道想要访问的 `GESpec` 的索引。
 
+![SetByCaller with a GameplayEffectContainer](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/gecontainersetbycaller.png)
 
+`GameplayEffectContainers` 还包含一种可选的有效 [目标选取](#concepts-targeting-containers) 方法。
 
+**[⬆ Back to Top](#table-of-contents)**
+
+### 4.6 Gameplay Abilities
+
+#### 4.6.1 Gameplay Ability Definition
+[`GameplayAbilities`](https://docs.unrealengine.com/en-US/API/Plugins/GameplayAbilities/Abilities/UGameplayAbility/index.html) (`GA`) 是游戏中 `Actor` 可以执行的任何动作或技能。一次可以有多个 `GameplayAbility` 处于活动状态，例如冲刺和射击。这些可以在蓝图或 C++ 中制作。
+
+`GameplayAbilities` 的示例：
+* 跳跃
+* 冲刺
+* 射击枪械
+* 每隔 X 秒被动阻挡攻击
+* 使用药水
+* 打开门
+* 收集资源
+* 构建建筑
+
+不应使用 `GameplayAbilities` 实现的内容：
+* 基本移动输入
+* 一些与 UI 的交互 — 不应使用 `GameplayAbility` 从商店购买物品。
+
+这些并不是规则，只是我的建议。您的设计和实现可能会有所不同。
+
+`GameplayAbilities` 默认具有层级功能，用于修改属性变化的数量或改变 `GameplayAbility` 的功能。
+
+`GameplayAbilities` 的运行取决于 [`Net Execution Policy`](#concepts-ga-net)，可以在拥有者客户端和/或服务器上运行，但不在模拟代理上运行。`Net Execution Policy` 确定了 `GameplayAbility` 是否会被本地 [预测](#concepts-p)。它们包括了对 [可选成本和冷却 `GameplayEffects`](#concepts-ga-commit) 的默认行为。`GameplayAbilities` 使用 [`AbilityTasks`](#concepts-at) 来处理随时间发生的动作，如等待事件、等待属性变化、等待玩家选择目标或使用 `Root Motion Source` 移动 `Character`。**模拟客户端不会运行 `GameplayAbilities`**。相反，当服务器运行能力时，任何需要在模拟代理上视觉播放的内容（如动画序列）都将通过 `AbilityTasks` 或 [`GameplayCues`](#concepts-gc)（用于声音和粒子等外观效果）进行复制或远程过程调用。
+
+所有 `GameplayAbilities` 都会覆盖其 `ActivateAbility()` 函数，其中包含您的游戏逻辑。可以在 `EndAbility()` 中添加额外的逻辑，该逻辑会在 `GameplayAbility` 完成或被取消时运行。
 
 
 
