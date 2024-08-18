@@ -65,13 +65,11 @@
               "state": {}
             }
           }
-        ],
-        "currentTab": 1
+        ]
       }
     ],
     "direction": "horizontal",
-    "width": 275.5,
-    "collapsed": true
+    "width": 275.5
   },
   "right": {
     "id": "e555dd6314b99512",
@@ -175,17 +173,17 @@
   },
   "active": "43efc25b6cb9a12c",
   "lastOpenFiles": [
+    "Images/activationfailedtags.png",
+    "README.md",
+    "Images/attributechange.png",
     "Images/derivedattribute.png",
     "Images/gameplayabilityworldreticle.png",
     "Images/cooldownchange.png",
     "Images/cooldownmmc.png",
     "Images/calculationmodifierbackingdataattribute.png",
     "Images/calculationmodifierbackingdatatempvariable.png",
-    "README.md",
     "Images/cooldownsbc.png",
     "Images/batchabilityactivate.png",
-    "Images/attributechange.png",
-    "Images/activationfailedtags.png",
     "GASDocumentation5.3_CN",
     "LICENSE",
     "Images",

@@ -1626,8 +1626,315 @@ Epic 的 [Action RPG 示例项目](https://www.unrealengine.com/marketplace/en-U
 
 所有 `GameplayAbilities` 都会覆盖其 `ActivateAbility()` 函数，其中包含您的游戏逻辑。可以在 `EndAbility()` 中添加额外的逻辑，该逻辑会在 `GameplayAbility` 完成或被取消时运行。
 
+简单 `GameplayAbility` 的流程图：
+
+![Simple GameplayAbility Flowchart](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/abilityflowchartsimple.png)
+
+更复杂的 `GameplayAbility` 的流程图：
+
+![Complex GameplayAbility Flowchart](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/abilityflowchartcomplex.png)
+
+复杂的能力可以通过使用多个相互作用（激活、取消等）的 `GameplayAbilities` 来实现。
+
+##### 4.6.1.1 Replication Policy
+不要使用这个选项。它的名称容易误导人，而且您并不需要它。[`GameplayAbilitySpecs`](#concepts-ga-spec) 默认从服务器复制到拥有者客户端。如上所述，**`GameplayAbilities` 不在模拟代理上运行**。它们使用 `AbilityTasks` 和 `GameplayCues` 来复制或 RPC 视觉变化到模拟代理。Epic 的 Dave Ratti 表达了他希望 [在未来移除这个选项](https://epicgames.ent.box.com/s/m1egifkxv3he3u3xezb9hzbgroxyhx89) 的愿望。
+
+##### 4.6.1.2 Server Respects Remote Ability Cancellation
+这个选项往往带来的麻烦多过好处。这意味着如果客户端的 `GameplayAbility` 因取消或自然完成而结束，它将强制服务器版本无论是否完成都要结束。后者的问题更为重要，特别是对于高延迟玩家使用的本地预测 `GameplayAbilities`。通常您会希望禁用这个选项。
+
+##### 4.6.1.3 Replicate Input Directly
+设置这个选项将始终将输入按下和释放事件复制到服务器。Epic 建议不要使用这个选项，而是依赖现有的与输入相关的 [`AbilityTasks`](#concepts-at) 中内置的 `Generic Replicated Events`，前提是您已经将 [输入绑定到您的 `ASC`](#concepts-ga-input)。
+
+Epic的评论：
+
+```c++  
+/** 直接输入状态复制。如果在能力上将 `bReplicateInputDirectly` 设置为 `true`，则会调用这些方法，通常这不是一个好的选择。（相反，建议使用通用复制事件 `Generic Replicated Events`。） */  
+UAbilitySystemComponent::ServerSetInputPressed()  
+```
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.6.2 Binding Input to the ASC
+`ASC` 允许您直接将输入动作绑定到它，并在授予时将这些输入分配给 `GameplayAbilities`。分配给 `GameplayAbilities` 的输入动作会在按下时自动激活这些 `GameplayAbilities`，前提是满足 `GameplayTag` 的要求。分配的输入动作是使用响应输入的内置 `AbilityTasks` 所必需的。
+
+除了用于激活 `GameplayAbilities` 的输入动作外，`ASC` 还接受通用的 `Confirm` 和 `Cancel` 输入。这些特殊输入被 `AbilityTasks` 用于确认诸如 [`Target Actors`](#concepts-targeting-actors) 或取消它们。
+
+要将输入绑定到 `ASC`，您必须首先创建一个枚举，将输入动作名称转换为字节。枚举名称必须与项目设置中用于输入动作的名称完全匹配。`DisplayName` 不重要。
+
+来自示例项目：
+
+```c++  
+UENUM(BlueprintType)  
+enum class EGDAbilityInputID : uint8  
+{  
+    // 0 None    
+    None         UMETA(DisplayName = "None"),    
+    // 1 Confirm    
+    Confirm      UMETA(DisplayName = "Confirm"),    
+    // 2 Cancel    
+    Cancel       UMETA(DisplayName = "Cancel"),    
+    // 3 LMB    
+    Ability1     UMETA(DisplayName = "Ability1"),    
+    // 4 RMB    
+    Ability2     UMETA(DisplayName = "Ability2"),    
+    // 5 Q    
+    Ability3     UMETA(DisplayName = "Ability3"),    
+    // 6 E    
+    Ability4     UMETA(DisplayName = "Ability4"),    
+    // 7 R    
+    Ability5     UMETA(DisplayName = "Ability5"),    
+    // 8 Sprint    
+    Sprint       UMETA(DisplayName = "Sprint"),    
+    // 9 Jump    
+    Jump         UMETA(DisplayName = "Jump")
+};  
+```
+
+如果您的 `ASC` 位于 `Character` 上，则在 `SetupPlayerInputComponent()` 中包含绑定到 `ASC` 的函数：
+
+```c++  
+// Bind to AbilitySystemComponent  
+FTopLevelAssetPath AbilityEnumAssetPath = FTopLevelAssetPath(
+															FName("/Script/GASDocumentation"), 
+															FName("EGDAbilityInputID")
+);  
+AbilitySystemComponent->BindAbilityActivationToInputComponent(
+				PlayerInputComponent,
+				FGameplayAbilityInputBinds(FString("ConfirmTarget"),  
+			    FString("CancelTarget"), 
+			    AbilityEnumAssetPath, 
+			    static_cast<int32>(EGDAbilityInputID::Confirm), 
+			    static_cast<int32>(EGDAbilityInputID::Cancel))
+);  
+```
+
+如果您的 `ASC` 位于 `PlayerState` 上，在 `SetupPlayerInputComponent()` 中可能存在竞态条件，即 `PlayerState` 尚未复制到客户端。因此，我建议尝试在 `SetupPlayerInputComponent()` 和 `OnRep_PlayerState()` 中绑定输入。仅使用 `OnRep_PlayerState()` 是不够的，因为有可能在 `PlayerController` 告知客户端调用 `ClientRestart()` 创建 `InputComponent` 之前，`Actor` 的 `InputComponent` 可能为空，此时 `PlayerState` 已经复制。示例项目演示了在这两个位置尝试绑定输入的方法，并使用布尔值控制这一过程，确保实际只绑定输入一次。
+
+**注意：** 在示例项目中，枚举中的 `Confirm` 和 `Cancel` 并不匹配项目设置中的输入动作名称 (`ConfirmTarget` 和 `CancelTarget`)，但我们通过 `BindAbilityActivationToInputComponent()` 提供了它们之间的映射。由于我们提供了映射，所以它们不必匹配，但也可以匹配。枚举中的其他所有输入都必须与项目设置中的输入动作名称相匹配。
+
+对于只会由一个输入激活的 `GameplayAbilities`（它们总是在相同的“槽位”中，就像 MOBA 游戏一样），我倾向于在我的 `UGameplayAbility` 子类中添加一个变量来定义它们的输入。然后，我可以在授予能力时从 `ClassDefaultObject` 中读取这个变量。
+
+##### 4.6.2.1 Binding to Input without Activating Abilities
+如果您不想让 `GameplayAbilities` 在按下输入时自动激活，但仍想将它们绑定到输入以便与 `AbilityTasks` 一起使用，您可以在 `UGameplayAbility` 子类中添加一个新的布尔变量 `bActivateOnInput`，默认值为 `true`，并重写 `UAbilitySystemComponent::AbilityLocalInputPressed()`。
+
+```c++  
+void UGSAbilitySystemComponent::AbilityLocalInputPressed(int32 InputID)
+{
+    // 如果此InputID被泛型确认/取消覆盖且泛型确认/取消回调已绑定，则消耗输入
+    if (IsGenericConfirmInputBound(InputID))
+    {
+        LocalInputConfirm();
+        return;
+    }
+
+    if (IsGenericCancelInputBound(InputID))
+    {
+        LocalInputCancel();
+        return;
+    }
+
+    // ---------------------------------------------------------
+    
+    ABILITYLIST_SCOPE_LOCK();
+    for (FGameplayAbilitySpec& Spec : ActivatableAbilities.Items)
+    {
+        if (Spec.InputID == InputID)
+        {
+            if (Spec.Ability)
+            {
+                Spec.InputPressed = true;
+                if (Spec.IsActive())
+                {
+                    if (Spec.Ability->bReplicateInputDirectly && 
+                        IsOwnerActorAuthoritative() == false)
+                    {
+                        ServerSetInputPressed(Spec.Handle);
+                    }
+
+                    AbilitySpecInputPressed(Spec);
+
+                    // 触发InputPressed事件。此处不进行复制。如果有监听者，他们可能会将InputPressed事件                     复制到服务器。
+                    InvokeReplicatedEvent(EAbilityGenericReplicatedEvent::InputPressed, Spec.Handle, Spec.ActivationInfo.GetActivationPredictionKey());
+                }
+                else
+                {
+                    UGSGameplayAbility* GA = Cast<UGSGameplayAbility>(Spec.Ability);
+                    if (GA && GA->bActivateOnInput)
+                    {
+                        // 能力当前未激活，尝试激活它
+                        TryActivateAbility(Spec.Handle);
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.6.3 Granting Abilities
+将 `GameplayAbility` 授予 `ASC` 会将其添加到 `ASC` 的 `ActivatableAbilities` 列表中，如果满足相应的 [`GameplayTag` 要求](#concepts-ga-tags)，则可以随时激活该 `GameplayAbility`。
+
+我们在服务器上授予 `GameplayAbilities`，这会自动将相应的 [`GameplayAbilitySpec`](#concepts-ga-spec) 复制到拥有该能力的客户端。其他客户端或模拟代理不会收到 `GameplayAbilitySpec`。
+
+示例项目在 `Character` 类上存储了一个 `TArray<TSubclassOf<UGDGameplayAbility>>`，并在游戏开始时从中读取并授予这些能力：
+
+```c++
+void AGDCharacterBase::AddCharacterAbilities()
+{
+    // 只有在服务器上授予能力
+    if (Role != ROLE_Authority || !AbilitySystemComponent.IsValid() || AbilitySystemComponent->bCharacterAbilitiesGiven)
+    {
+        return;
+    }
+
+    for (TSubclassOf<UGDGameplayAbility>& StartupAbility : CharacterAbilities)
+    {
+        AbilitySystemComponent->GiveAbility(
+            FGameplayAbilitySpec(StartupAbility, GetAbilityLevel(StartupAbility.GetDefaultObject()->AbilityID), static_cast<int32>(StartupAbility.GetDefaultObject()->AbilityInputID), this));
+    }
+
+    AbilitySystemComponent->bCharacterAbilitiesGiven = true;
+}
+```
+
+在授予这些 `GameplayAbilities` 时，我们会创建 `GameplayAbilitySpec`，其中包含了 `UGameplayAbility` 类、能力等级、绑定的输入以及 `SourceObject` 或授予此 `GameplayAbility` 给此 `ASC` 的对象。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.6.4 Activating Abilities
+如果为 `GameplayAbility` 分配了输入动作，则当按下该输入且满足其 `GameplayTag` 要求时，它将被自动激活。但这可能不是激活 `GameplayAbility` 的理想方式。`ASC` 提供了四种其他方法来激活 `GameplayAbilities`：通过 `GameplayTag`、通过 `GameplayAbility` 类、通过 `GameplayAbilitySpec` 的句柄和通过事件。通过事件激活 `GameplayAbility` 允许您[与事件一起传递数据负载](#concepts-ga-data)。
+
+```c++  
+UFUNCTION(BlueprintCallable, Category = "Abilities")  
+bool TryActivateAbilitiesByTag(const FGameplayTagContainer& GameplayTagContainer, bool bAllowRemoteActivation = true);  
+  
+UFUNCTION(BlueprintCallable, Category = "Abilities")  
+bool TryActivateAbilityByClass(TSubclassOf<UGameplayAbility> InAbilityToActivate, bool bAllowRemoteActivation = true);  
+  
+bool TryActivateAbility(FGameplayAbilitySpecHandle AbilityToActivate, bool bAllowRemoteActivation = true);  
+  
+bool TriggerAbilityFromGameplayEvent(FGameplayAbilitySpecHandle AbilityToTrigger, FGameplayAbilityActorInfo* ActorInfo, FGameplayTag Tag, const FGameplayEventData* Payload, UAbilitySystemComponent& Component);  
+  
+FGameplayAbilitySpecHandle GiveAbilityAndActivateOnce(const FGameplayAbilitySpec& AbilitySpec, const FGameplayEventData* GameplayEventData);  
+```
+
+要通过事件激活 `GameplayAbility`，必须在 `GameplayAbility` 中设置其 `Triggers`。分配一个 `GameplayTag` 并选择一个 `GameplayEvent` 选项。要发送事件，请使用函数 `UAbilitySystemBlueprintLibrary::SendGameplayEventToActor(AActor* Actor, FGameplayTag EventTag, FGameplayEventData Payload)`。通过事件激活 `GameplayAbility` 允许您传递带有数据的负载。
+
+`GameplayAbility` 的 `Triggers` 还允许您在添加或移除 `GameplayTag` 时激活 `GameplayAbility`。
+
+**注意：** 在 Blueprint 中从事件激活 `GameplayAbility` 时，必须使用 `ActivateAbilityFromEvent` 节点。
+
+**注意：** 当 `GameplayAbility` 应该终止时不要忘记调用 `EndAbility()`，除非您有一个始终运行如被动能力的 `GameplayAbility`。
+
+**本地预测** `GameplayAbilities` 的激活序列：
+1. **拥有客户端** 调用 `TryActivateAbility()`
+2. 调用 `InternalTryActivateAbility()`
+3. 调用 `CanActivateAbility()` 并返回 `GameplayTag` 要求是否满足、`ASC` 是否能承担费用、`GameplayAbility` 是否不在冷却中以及没有其他实例正在激活
+4. 调用 `CallServerTryActivateAbility()` 并传递它生成的 `Prediction Key`
+5. 调用 `CallActivateAbility()`
+6. 调用 `PreActivate()` Epic 称之为“初始化样板代码”
+7. 调用 `ActivateAbility()` 最终激活能力
+
+**服务器** 接收到 `CallServerTryActivateAbility()`
+1. 调用 `ServerTryActivateAbility()`
+2. 调用 `InternalServerTryActivateAbility()` 
+3. 调用 `InternalTryActivateAbility()`
+4. 调用 `CanActivateAbility()` 并返回 `GameplayTag` 要求是否满足、`ASC` 是否能承担费用、`GameplayAbility` 是否不在冷却中以及没有其他实例正在激活
+5. 如果成功则调用 `ClientActivateAbilitySucceed()` 告诉客户端更新其 `ActivationInfo` 以确认服务器已激活，并广播 `OnConfirmDelegate` 委托。这不是输入确认。
+6. 调用 `CallActivateAbility()`
+7. 调用 `PreActivate()` Epic 称之为“初始化样板代码”
+8. 调用 `ActivateAbility()` 最终激活能力
+
+如果任何时候服务器未能激活，则会调用 `ClientActivateAbilityFailed()`，立即终止客户端的 `GameplayAbility` 并撤销任何预测的变化。
+
+##### 4.6.4.1 Passive Abilities
+为了实现自动激活并持续运行的被动 `GameplayAbilities`，可以重写 `UGameplayAbility::OnAvatarSet()`，该方法会在 `GameplayAbility` 被授予并且 `AvatarActor` 设置好后自动调用，并在其中调用 `TryActivateAbility()`。
+
+我建议在您的自定义 `UGameplayAbility` 类中添加一个 `bool` 变量，用来指定 `GameplayAbility` 在被授予时是否应该激活。示例项目为其被动护甲叠加能力就是这样做的。
+
+被动 `GameplayAbilities` 通常会有 `Server Only` 的 [`Net Execution Policy`](#concepts-ga-net)。
+
+```c++  
+void UGDGameplayAbility::OnAvatarSet(const FGameplayAbilityActorInfo * ActorInfo, const FGameplayAbilitySpec & Spec)  
+{  
+    Super::OnAvatarSet(ActorInfo, Spec);  
+    if (bActivateAbilityOnGranted)    
+    {       
+	    ActorInfo->AbilitySystemComponent->TryActivateAbility(Spec.Handle, false);    
+	}
+}  
+```
+
+Epic 将此函数描述为启动被动能力以及执行类似于 `BeginPlay` 操作的正确位置。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+##### 4.6.4.2 Activation Failed Tags
+`GameplayAbilities` 有默认逻辑来告诉您为什么能力激活失败。要启用这一点，您必须设置与默认失败情况对应的 `GameplayTags`。
+
+将这些标签（或您自己的命名约定）添加到您的项目中：
+```  
++GameplayTagList=(Tag="Activation.Fail.BlockedByTags",DevComment="")  
++GameplayTagList=(Tag="Activation.Fail.CantAffordCost",DevComment="")  
++GameplayTagList=(Tag="Activation.Fail.IsDead",DevComment="")  
++GameplayTagList=(Tag="Activation.Fail.MissingTags",DevComment="")  
++GameplayTagList=(Tag="Activation.Fail.Networking",DevComment="")  
++GameplayTagList=(Tag="Activation.Fail.OnCooldown",DevComment="")  
+```
+
+然后将它们添加到 GASDocumentation\\Config\\DefaultGame.ini 中：
+
+```  
+[/Script/GameplayAbilities.AbilitySystemGlobals]  
+ActivateFailIsDeadName=Activation.Fail.IsDead  
+ActivateFailCooldownName=Activation.Fail.OnCooldown  
+ActivateFailCostName=Activation.Fail.CantAffordCost  
+ActivateFailTagsBlockedName=Activation.Fail.BlockedByTags  
+ActivateFailTagsMissingName=Activation.Fail.MissingTags  
+ActivateFailNetworkingName=Activation.Fail.Networking  
+```
+
+现在每当能力激活失败时，相应的 `GameplayTag` 将被包含在输出日志消息中或在 `showdebug AbilitySystem` HUD 上可见。
+
+```  
+LogAbilitySystem: Display: InternalServerTryActivateAbility. Rejecting ClientActivation of Default__GA_FireGun_C. InternalTryActivateAbility failed: Activation.Fail.BlockedByTags  
+LogAbilitySystem: Display: ClientActivateAbilityFailed_Implementation. PredictionKey :109 Ability: Default__GA_FireGun_C  
+```
 
 
+![Activation Failed Tags Displayed in showdebug AbilitySystem](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/activationfailedtags.png)
+
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.6.5 Canceling Abilities
+要在内部取消 `GameplayAbility`，您可以调用 `CancelAbility()`。这将会调用 `EndAbility()` 并将其 `WasCancelled` 参数设置为 `true`。
+
+要从外部取消 `GameplayAbility`，`ASC` 提供了一些函数：
+
+```c++
+/** 取消指定的能力 CDO。 */
+void CancelAbility(UGameplayAbility* Ability);	
+
+/** 取消由传入的 spec handle 指示的能力。如果 handle 在重新激活的能力中未找到，则不执行任何操作。 */
+void CancelAbilityHandle(const FGameplayAbilitySpecHandle& AbilityHandle);
+
+/** 取消具有指定标签的所有能力。不会取消 Ignore 实例 */
+void CancelAbilities(const FGameplayTagContainer* WithTags=nullptr, const FGameplayTagContainer* WithoutTags=nullptr, UGameplayAbility* Ignore=nullptr);
+
+/** 不管标签如何取消所有能力。不会取消 Ignore 实例 */
+void CancelAllAbilities(UGameplayAbility* Ignore=nullptr);
+
+/** 取消所有能力并销毁任何剩余的实例化能力 */
+virtual void DestroyActiveState();
+
+```
+
+**注意：** 我发现 `CancelAllAbilities` 在处理 `Non-Instanced` `GameplayAbilities` 时似乎不能正常工作。它似乎遇到 `Non-Instanced` `GameplayAbility` 后就放弃了。`CancelAbilities` 更好地处理 `Non-Instanced` `GameplayAbilities`，这也是示例项目使用的（跳跃是一个非实例化的 `GameplayAbility`）。您的体验可能会有所不同。
+
+**[⬆ Back to Top](#table-of-contents)**
 
 
 
