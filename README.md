@@ -171,7 +171,7 @@ GAS 的当前问题：
 
 **注意:** `Mixed` 复制模式期望 `OwnerActor` 的 `Owner` 是`Controller`。`PlayerState` 的`Owner` 默认是 `Controller`， 但 `Character` 的不是。如果在`OwnerActor` 不是 `PlayerState` 的情况下使用 `Mixed` 复制模式， 那么你需要通过调用 `SetOwner()` 方法并传入一个有效的 `Controller` 来设置 `OwnerActor` 的所有者。
 
-从 4.24 版本开始，`PossessedBy()`方法现在会将 `Pawn` 的拥有者设置为新的 `Controller`。
+从 4.24 版本开始，`PossessedBy()`方法现在会将 `Pawn` 的所有者设置为新的 `Controller`。
 
 **[⬆ Back to Top](#table-of-contents)**
 
@@ -439,6 +439,212 @@ AbilitySystemComponent->ForceReplication();
 1. 在物品上使用普通浮点数（**推荐**）
 	+ 直接在物品上存储普通的浮点数值，这样可以避免与 `AttributeSet` 和 `ASC` 相关的复杂性。
 2. 在物品上使用单独的 `AttributeSet`
-	+ 为每个物品创建一个单独的 `AttributeSet`，并将其附加到物品上。这种方法增加了灵活性，但同时也引入了更多的管理负担。
+	+ 为每个物品创建一个单独的 `AttributeSet`，并将其附加到物品上。这种方法增加了灵活性，但同时也引入了更多的管理负担。****
 3. 在物品上使用单独的 `ASC`
 	+ 为每个物品配备一个单独的 `ASC`，并在其中管理物品的所有属性。这种方法提供了最大的灵活性，但也可能导致更复杂的架构和更高的资源消耗。
+
+###### 4.4.2.3.1 在物品上使用普通浮点数
+使用普通浮点数代替 `Attributes`，而不是使用 `Attributes`，可以在物品类实例上存储普通的浮点数值。例如，《堡垒之夜》（Fortnite）和 [GASShooter](https://github.com/tranek/GASShooter) 就是这样处理枪支弹药的。对于枪支，可以直接将最大弹匣容量、当前弹匣内的弹药数量、备用弹药等作为复制的浮点数 (`COND_OwnerOnly`) 存储在枪支实例上。如果武器共享备用弹药，则可以将备用弹药移动到角色上作为一个 `Attribute`，存储在共享的弹药 `AttributeSet` 中（重新装填能力可以使用 `Cost GE` 从备用弹药中提取到枪支的浮点数弹匣弹药中）。因为你没有使用 `Attributes` 来处理当前弹匣中的弹药，所以你需要在 `UGameplayAbility` 中重写一些函数来检查和应用枪支上的浮点数值的成本。在授予能力时，将枪支设置为 [`GameplayAbilitySpec`](https://github.com/tranek/GASDocumentation#concepts-ga-spec) 中的 `SourceObject`，这意味着在能力内部你可以访问到授予该能力的枪支。
+
+为了防止枪支在自动射击期间回传弹药量并覆盖本地弹药量，可以在 `PreReplication()` 函数中当玩家具有 `IsFiring` `GameplayTag` 时禁用弹药量的复制。这样做实际上是在执行自己的本地预测。
+
+```c++  
+void AGSWeapon::PreReplication(IRepChangedPropertyTracker& ChangedPropertyTracker)  
+{  
+    Super::PreReplication(ChangedPropertyTracker);  
+    DOREPLIFETIME_ACTIVE_OVERRIDE(AGSWeapon, PrimaryClipAmmo, (IsValid(AbilitySystemComponent) && !AbilitySystemComponent->HasMatchingGameplayTag(WeaponIsFiringTag)));    DOREPLIFETIME_ACTIVE_OVERRIDE(AGSWeapon, SecondaryClipAmmo, (IsValid(AbilitySystemComponent) && !AbilitySystemComponent->HasMatchingGameplayTag(WeaponIsFiringTag)));}  
+```
+
+优点：
+1. 避免使用 `AttributeSets`的限制（见下文）
+
+限制：
+1. 无法使用现有的 `GameplayEffect` 工作流程
+	+ 不能使用现有的 `GameplayEffect` 流程（如使用弹药时的 Cost GEs 等）。
+2. 需要重写 `UGameplayAbility` 的关键函数
+	+ 需要进行额外工作来重写 `UGameplayAbility` 中的关键函数，以检查和应用枪支浮点数值的弹药成本。
+
+###### 4.4.2.3.2 在物品上使用 `AttributeSet`
+使用一个单独的 `AttributeSet` 在物品上，并在[将物品添加到玩家的库存时将其 添加到玩家的 `ASC` 中](#concepts-as-design-addremoveruntime)，这种方法是可以工作的，但它有一些重要的限制。我在早期版本的 [GASShooter](https://github.com/tranek/GASShooter) 中为武器弹药实现了这种方法。武器将其`Attributes`（如最大弹匣容量、当前弹匣中的弹药数量、备用弹药等）存储在一个位于武器类上的 `AttributeSet` 中。如果武器共享备用弹药，你可以将备用弹药移到角色上的共享弹药 `AttributeSet` 中。当武器在服务器上被添加到玩家的库存时，武器会将其 `AttributeSet` 添加到玩家的 `ASC::SpawnedAttributes` 中。服务器随后会将这些信息复制到客户端。如果武器从库存中移除，它会从 `ASC::SpawnedAttributes` 中移除其 `AttributeSet`。
+
+当你将 `AttributeSet` 存储在 `OwnerActor` 之外的对象上（比如武器）时，最初会在 `AttributeSet` 中遇到一些编译错误。解决方法是在 `BeginPlay()` 中构造 `AttributeSet` 而不是在构造函数中，并在武器上实现 `IAbilitySystemInterface`（在将武器添加到玩家库存时设置指向 `ASC` 的指针）。
+
+```c++  
+void AGSWeapon::BeginPlay()  
+{  
+    if (!AttributeSet)    {       AttributeSet = NewObject<UGSWeaponAttributeSet>(this);    }    //...}  
+```
+
+你可以通过查看这个 [旧版GASShooter](https://github.com/tranek/GASShooter/tree/df5949d0dd992bd3d76d4a728f370f2e2c827735) 来了解具体实现
+
+优点：
+1. 可以使用现有的 `GameplayAbility` 和 `GameplayEffect` 工作流程
+	+ 可以利用现有的 `GameplayEffect` 流程（如使用弹药时的 `Cost GEs` 等）。
+2. 对于非常小的物品集合设置简单
+
+限制：
+1. 为每种武器类型都需要创建一个新的 `AttributeSet` 类：
+	+ `ASCs` 只能功能上有每个类的一个 `AttributeSet` 实例，因为对某个 `Attribute` 的更改会查找 `ASCs` 的 `SpawnedAttributes` 数组中该 `AttributeSet` 类的第一个实例。同一 `AttributeSet` 类的其他实例会被忽略。
+2. 玩家库存中只能拥有每种类型的武器各一件：
+	+ 由于上述原因，即每个 `AttributeSet` 类只能有一个实例，因此玩家库存中只能拥有每种类型的武器各一件。
+3. 移除 `AttributeSet` 是危险的：
+	+ 在 GASShooter 中，如果玩家因火箭而自杀，玩家会立即从他的库存中移除火箭发射器（包括从 `ASC` 中移除其 `AttributeSet`）。当服务器复制火箭发射器的弹药 `Attribute` 发生变化时，客户端的 `ASC` 上已经不存在该 `AttributeSet`，这会导致游戏崩溃。
+
+###### 4.4.2.3.3 物品上的 `ASC`
+在每个物品上放置整个 `AbilitySystemComponent` 是一种极端的做法。我个人没有这样做过，也没有见过实际项目中采用这种方式。要使其正常工作，需要大量的工程设计和实现。
+
+>译者注：这种方法的主要考虑因素包括：
+>		1.资源消耗：每个 ASC 都会占用一定的内存和计算资源。
+>		2. 复杂性：每个物品都有自己的 ASC 会增加系统的整体复杂性。
+>		3. 维护成本：随着物品数量的增加，维护每个物品的 ASC 及其相关逻辑将会变得更加困难。
+尽管这种方法提供了高度的灵活性和定制性，但在大多数情况下，使用更简单的方案（如直接在物品上存储浮点数值或使用单独的 AttributeSet）可能是更好的选择。
+
+>在具有相同所有者但不同化身的多个对象上放置多个 AbilitySystemComponent是否可行？
+
+>在具有相同所有者但不同化身的对象（例如，在棋子和武器/物品/投射物上，所有者设置为 PlayerState）上放置多个 AbilitySystemComponent 是否可行？
+
+可行性分析：
+1. 实现挑战：
+	+ 实现在所有者演员上的 IGameplayTagAssetInterface 和 IAbilitySystemInterface 可能会面临一些挑战。
+		+ IGameplayTagAssetInterface：聚合来自所有 ASC 的标签可能可行，但需要注意 -HasAllMatchingGameplayTags 可能需要跨 ASC 聚合来满足。
+		+ IAbilitySystemInterface：确定哪个 ASC 是权威的以及如何处理 GameplayEffect 的应用更为复杂。
+2. 潜在解决方案：
+	+ 为不同的对象（如Pawn和武器）分别实现 IGameplayTagAssetInterface 和 IAbilitySystemInterface，并定义一套规则来决定哪些 GameplayEffect 应用于哪个 ASC。
+	+ 可能需要自定义逻辑来协调多个 ASC 之间的交互，确保一致性和正确性。
+3. 独立 ASC 的优势：
+	+ 单独在棋子和武器上放置 ASC 可以更好地区分描述武器的标签与描述拥有棋子的标签。
+	+ 授予武器的标签也可以“适用于”所有者，而不适用于其他任何东西，这样可以在一定程度上保持属性和 GameplayEffects 的独立性，同时让所有者聚合拥有的标签。
+4. 复杂性考量：
+	+ 拥有多个具有相同所有者的 ASC 可能会引入额外的复杂性，特别是在处理 GameplayEffect 的应用和同步方面。
+
+>结论：虽然理论上可行，但在实践中需要仔细设计和实现来解决多 ASC 的协调问题。这可能会带来额外的开发成本和技术挑战。
+
+>我看到的第一个问题是实现在所有者演员上的 IGameplayTagAssetInterface 和 IAbilitySystemInterface。
+
++ IGameplayTagAssetInterface：聚合来自所有 ASC 的标签可能是可行的（但需要注意 -HasAllMatchingGameplayTags 可能仅通过跨 ASC 聚合来满足。仅仅将调用转发给每个 ASC 并将结果合并在一起是不够的）。
++ IAbilitySystemInterface：这个问题更为棘手：哪个 ASC 是权威的？如果有人想要应用一个 GameplayEffect —— 应该将其应用到哪个 ASC 上？也许你可以解决这些问题，但这个问题中最难的部分是所有者将拥有多个 ASC。
+解决方案探讨
+1. 聚合标签：
+	+ 对于 IGameplayTagAssetInterface，可以通过遍历所有 ASC 来聚合标签。需要注意的是 -HasAllMatchingGameplayTags 的实现可能需要跨 ASC 聚合来确保正确性。这意味着需要自定义逻辑来处理标签的查询，确保所有相关的 ASC 都被考虑到。
+2. 确定权威 ASC：
+	+ 对于 IAbilitySystemInterface，需要定义一个策略来确定哪个 ASC 是权威的。一种可能的方法是为特定类型的 GameplayEffect 定义一个优先级列表，根据这个列表来决定哪个 ASC 应该接收 GameplayEffect。
+	+ 另一种方法是根据 GameplayEffect 的来源和目的来决定应该应用到哪个 ASC。例如，如果 GameplayEffect 来源于武器，则应用到武器的 ASC；如果是全局效果，则应用到棋子的 ASC。
+3. 协调多个 ASC：
+	+ 需要自定义逻辑来协调多个 ASC 之间的交互，确保一致性和正确性。这可能涉及到定义一套规则来决定哪些 GameplayEffect 应用于哪个 ASC，以及如何处理这些 ASC 之间的数据同步。
+
+>结论：虽然理论上可行，但在实践中需要仔细设计和实现来解决多 ASC 的协调问题。这可能会带来额外的开发成本和技术挑战。
+
+Dave Ratti 从 Epic 的回答关于 [community questions #6](https://epicgames.ent.box.com/s/m1egifkxv3he3u3xezb9hzbgroxyhx89)
+
+---
+
+我们列出了八个问题：
+1. 我们如何根据需要在 GameplayAbilities 之外或与 GameplayAbilities 无关的情况下创建范围预测窗口？例如，当一个发射后不管的射弹击中敌人时，如何在本地预测 GameplayEffect 造成的伤害？
+
+PredictionKey 系统实际上并不是为此而设计的。从根本上讲，该系统的工作原理是客户端启动预测操作，使用密钥将其告知服务器，然后客户端和服务器都运行相同的操作并将预测副作用与给定的预测密钥相关联。例如，“我正在预测性地激活一项能力”或“我已经生成了目标数据，并将在 WaitTargetData 任务之后预测性地运行能力图的一部分”。
+
+使用这种模式，PredictionKey 从服务器“反弹”并通过 UAbilitySystemComponent::ReplicatedPredictionKeyMap（复制属性）返回到客户端。一旦密钥从服务器复制回来，客户端就可以撤消所有本地预测副作用（GameplayCues、GameplayEffects）：复制的版本*将存在*，如果不存在，则为错误预测。准确知道​​何时撤消预测副作用在这里至关重要：如果太早，您会看到间隙，如果太晚，您将得到“双重”。 （请注意，这是指状态预测，例如基于持续时间的游戏效果的循环 GameplayCue。“突发”GameplayCues 和即时游戏效果永远不会“撤消”或回滚。如果与它们关联的预测密钥，它们只会在客户端上被跳过）。
+
+为了进一步说明这一点：至关重要的是，预测操作是服务器不会自行执行的操作，而只有在客户端告诉它们时才会执行。因此，除非“某事”是服务器在客户端通知后才会执行的操作，否则通用的“按需创建密钥并告知服务器以便我可以运行某事”是行不通的。
+
+回到最初的问题：类似于发射后就不管的射弹。Paragon 和 Fornite 都有使用 GameplayCues 的射弹演员类。但是，我们不使用预测密钥系统来执行这些操作。相反，我们有一个关于非复制 GameplayCues 的概念。GameplayCues 只是在本地触发并被服务器完全跳过。本质上，所有这些都是直接调用 UGameplayCueManager::HandleGameplayCue。它们不通过 UAbilitySystemComponent 路由，因此不会进行预测密钥检查/早期返回。
+
+非复制 GameplayCues 的缺点是，它们不会被复制。因此，这取决于射弹类/蓝图，以确保调用这些函数的代码路径在每个人身上都运行。我们有启动提示（在 BeginPlay 中调用）、爆炸、击中墙壁/角色等。
+
+这些类型的事件已经在客户端生成，因此调用非复制的游戏提示并不是什么大问题。复杂的蓝图可能很棘手，作者需要确保他们了解在哪里运行什么。
+
+2. 当使用 WaitNetSync AbilityTask 和 OnlyServerWait 在本地预测的 GameplayAbility 中创建范围预测窗口时，由于服务器正在等待带有预测密钥的 RPC，玩家是否可以通过延迟向服务器发送数据包来控制 GameplayAbility 时间，从而进行作弊？这在 Paragon 或 Fortnite 中是否曾出现过问题？如果是，Epic 做了什么来解决这个问题？
+
+是的，这是一个合理的担忧。在服务器上运行的任何等待客户端“信号”的能力蓝图都可能容易受到延迟切换类型漏洞的攻击。
+
+Paragon 有一个类似于 UAbilityTask_WaitTargetData 的自定义定位任务。在这个任务中，我们有超时或“最大延迟”，我们会在客户端等待即时定位模式。如果定位模式正在等待用户确认（按下按钮），那么它将被忽略，因为用户可以慢慢来。但是对于即时确认目标的技能，我们只会等待一段时间，然后 A) 在服务器端生成目标数据 B) 取消该技能。
+
+我们从未有过 WaitNetSync 这样的机制，我们很少使用。
+
+不过，我认为 Fortnite 不会使用任何类似的东西。Fortnite 中的武器技能是特殊情况，批量处理到单个 Fortnite 特定的 RPC：一个 RPC 用于激活技能、提供目标数据和结束技能。因此，在 Battle Royale 中，武器技能本质上不会受到此影响。
+
+我的看法是，这可能是可以在整个系统范围内解决的问题，但我认为我们不会很快做出改变。针对您提到的情况，对 WaitNetSync 进行局部修复以包含最大延迟可能是一项合理的任务，但同样，我们不太可能在不久的将来在我们这边做到这一点。
+
+3. Paragon 和 Fortnite 使用了哪种 EGameplayEffectReplicationMode，Epic 对何时使用它们有什么建议？
+
+这两款游戏基本上都对玩家控制的角色使用混合模式，对 AI 控制的角色（AI 小兵、丛林小兵、AI Husk 等）使用最小模式。这是我建议大多数人在多人游戏中使用该系统的方式。越早设置这些，越好。
+
+Fortnite 在优化方面更进一步。它实际上根本不为模拟代理复制 UAbilitySystemComponent。在拥有 Fortnite 玩家状态类的 ::ReplicateSubobjects() 中跳过组件和属性子对象。我们确实将能力系统组件中的最低限度复制数据推送到 pawn 本身的结构（基本上是属性值的子集和我们在位掩码中复制的标签白名单子集）。我们称之为“代理”。在接收端，我们获取在 pawn 上复制的代理数据，并将其推回到玩家状态的能力系统组件中。因此，FNBR 中确实为每个玩家提供了一个 ASC，但它并不直接复制：而是通过 pawn 上的最小代理结构复制数据，然后路由回接收端的 ASC。这是有优势的，因为它 A) 是一组更简单的数据 B) 利用了 pawn 相关性。
+
+我不确定自那时以来已经完成的其他服务器端优化（复制图等）是否仍然有必要，而且它不是最易于维护的模式。
+
+4. 由于我们无法根据 GameplayPrediction.h 预测 GameplayEffects 的移除，是否有任何策略可以减轻延迟对移除 GameplayEffects 的影响？例如，当移除移动速度慢的元素时，我们目前必须等待服务器复制 GameplayEffect 移除，从而导致玩家角色位置的突然变化。
+
+这是一个棘手的问题，我没有好的答案。我们通常通过容差和平滑来绕过这些问题。我完全同意能力系统和与角色移动系统的精确同步并不好，我们确实想修复它。
+
+我有一个允许预测移除 GE 的架子，但在继续前进之前永远无法解决所有边缘情况。但这并不能解决所有问题，因为角色移动仍然有一个内部保存的移动缓冲区，它对能力系统和可能的移动速度修改器等一无所知。即使无法预测 GE 的移除，仍然有可能进入校正反馈循环。
+
+如果你认为你的情况确实很危急，你可以预测性地添加一个 GE，这会抑制你的移动速度 GE。我自己从来没有这样做过，但之前曾对此进行过理论研究。它可能能够帮助解决某一类问题。
+
+5. 我们知道，AbilitySystemComponent 存在于 Paragon 和 Fortnite 中的 PlayerState 上，以及 Action RPG Sample 中的角色上。Epic 对于 AbilitySystemComponent 应该存在于何处的内部规则、指南或建议是什么——它的所有者应该是谁？
+
+一般来说，我认为任何不需要重生的东西都应该有相同的所有者和 Avatar 角色。任何东西，如 AI 敌人、建筑物、世界道具等。
+
+任何重生的东西都应该有不同的所有者和 Avatar，这样 Ability 系统组件就不需要在重生后保存/重新创建/恢复。
+
+PlayerState 是合乎逻辑的选择，它会复制到所有客户端（而 PlayerController 则不是）。
+
+缺点是 PlayerState 总是相关的，所以你可能会在 100 个玩家的游戏中遇到问题。（请参阅问题 #3 中 FN 所做的事情的注释）。
+
+6. 是否有可能让多个 AbilitySystemComponents 拥有相同的所有者但拥有不同的化身（例如，在 pawn 和武器/物品/射弹上，所有者设置为 PlayerState）？
+
+我看到的第一个问题是在拥有者 Actor 上实现 IGameplayTagAssetInterface 和 IAbilitySystemInterface。前者可能是可行的：只需聚合所有 ASC 中的标签（但要注意 - HasAlMatchingGameplayTags 只能通过跨 ASC 聚合来满足。仅仅将该调用转发给每个 ASC 并将结果一起进行 OR 是不够的）。但后者更加棘手：哪个 ASC 是权威的？如果有人想应用 GE - 哪一个应该接收它？也许你可以解决这些问题，但问题的这一方面将是最困难的：所有者将在其下拥有多个 ASC。
+
+不过，将棋子和武器上的 ASC 分开是有意义的。例如，区分描述武器的标签和描述拥有棋子的标签。也许赋予武器的标签也“适用于”所有者，而不适用于其他任何东西，这确实有意义（例如，属性和 GE 是独立的，但所有者将像我上面描述的那样汇总拥有的标签）。我相信这可以奏效。但拥有同一个所有者的多个 ASC 可能会变得很危险。
+
+7. 有没有办法阻止服务器覆盖拥有客户端上本地预测技能的冷却时间？在高延迟的情况下，当本地冷却时间到期但服务器上仍处于冷却状态时，这将允许拥有客户端“尝试”再次激活该技能。当拥有客户端的激活请求通过网络到达服务器时，服务器可能已冷却完毕，或者服务器可能能够将激活请求排队等待剩余的毫秒数。否则，延迟较高的客户端在重新激活技能之前会比延迟较低的客户端有更长的延迟。这在冷却时间非常短的技能（例如冷却时间可能不到一秒的基本攻击）中最为明显。如果没有办法阻止服务器覆盖本地预测技能的冷却时间，那么 Epic 减轻高延迟对重新激活技能的影响的策略是什么？换个例子来说，Epic 如何设计 Paragon 的基本攻击和其他能力，以便高延迟玩家能够以与低延迟玩家相同的速度通过本地预测进行攻击或激活？
+
+简而言之，没有办法阻止这种情况，Paragon 肯定存在问题。
+更高延迟的连接在基本攻击时 ROF 会更低。
+
+我试图通过添加“GE 协调”来解决这个问题，在计算 GE 持续时间时会考虑延迟。本质上允许服务器占用部分总 GE 时间，以便 GE 客户端的有效时间与任何延迟量 100% 一致（尽管波动仍然可能导致问题）。然而，我从来没有让它处于可以发货的状态，项目进展很快，我们从来没有完全解决这个问题。
+
+Fortnite 自己记录武器的射击率：它不使用 GE 来冷却武器。如果这对您的游戏来说是一个严重问题，我会推荐它。
+
+8. Epic 的 GameplayAbilitySystem 插件路线图是什么？
+Epic 计划在 2019 年及以后添加哪些功能？
+我们觉得目前系统总体上相当稳定，我们没有人负责开发主要的新功能。偶尔会针对 Fortnite 或
+UDN/pull 请求进行错误修复和小改进，但目前就是这样。
+从长远来看，我认为我们最终会推出“V2”或进行一些重大更改。我们从编写这个系统中学到了很多东西，觉得我们做对了很多，也做错了很多。我很想有机会纠正
+这些错误并改进上面指出的一些致命缺陷。
+如果 V2 真的要推出，提供升级路径将是至关重要的。我们永远不会制作 V2 并永远将 Fortnite 留在 V1 上：将有一些路径或程序会尽可能自动迁移，尽管几乎肯定仍需要手动重新制作。
+
+优先修复将是：
+● 与角色移动系统的更好互操作性。统一客户端预测。
+● GE 移除预测（问题 #4）
+● GE 延迟协调（问题 #8）
+● 通用网络优化，例如批处理 RPC 和代理结构。大部分是我们为 Fortnite 所做的工作，但找到了将其分解为更通用形式的方法，至少这样游戏就可以更轻松地编写自己的游戏特定优化。
+
+我会考虑进行更一般的重构类型的更改：
+● 我想从根本上摆脱让 GE 直接引用
+电子表格值的做法，相反，它们将能够发出参数，并且这些
+参数可以由与电子表格
+值绑定的某个更高级别的对象填充。当前模型的问题在于，由于 GE 与曲线表行紧密耦合，因此无法共享。我认为可以编写一个通用的参数化系统，并将其作为 V2 系统的基础。
+● 减少 UGameplayAbility 上的“策略”数量。我会删除 ReplicationPolicy
+InstancingPolicy。在我看来，Replication 几乎从未真正需要过，而且会造成
+混乱。应该通过将
+FGameplayAbilitySpec 设为可以子类化的 UObject 来替换 InstancingPolicy。这应该是具有事件且可蓝图化的
+“非实例化能力对象”。
+UGameplayAbility 应该是“每次执行时实例化”的对象。如果您需要实际实例化，它可以是可选的：相反，“非实例化”能力将通过新的 UGameplayAbilitySpec 对象实现。
+● 系统应提供更多“中级”构造，例如“过滤的 GE 应用程序容器”（数据驱动将哪些 GE 应用于具有更高级别游戏逻辑的哪些参与者）、“重叠体积支持”（根据碰撞原始重叠事件应用“过滤的 GE 应用程序容器”）等。这些是每个项目最终以自己的方式实现的构建块。正确处理它们并非易事，因此我认为我们应该更好地提供一些基本实现。
+● 总体而言，减少启动和运行项目所需的样板。可能是一个单独的模块“Ex 库”或任何可以提供开箱即用的被动能力或基本命中扫描武器之类的东西。此模块是可选的，但可以让你快速启动并运行。
+● 我想将 GameplayCues 移至与能力系统不耦合的单独模块。我认为这里可以做出很多改进。
+
+这只是我的个人意见，不代表任何人的承诺。我认为最现实的行动方案是，随着新引擎技术计划的实施，能力系统将需要更新，那时就是做这种事情的时候。这些计划可能与脚本、网络或物理/角色运动有关。不过，这一切都是长远考虑，所以我无法对时间表做出承诺或估计。
+
+---
+
+优点：
+1. 可以利用现有的 `GameplayAbility` 和 `GameplayEffect` 工作流程，例如使用 `Cost GEs` 来处理弹药消耗等。
+2. 可以在每个武器的 `AbilitySystemComponent (ASC)` 上重用 `AttributeSet` 类。
+
+限制：
+1. 未知的工程成本
+2. 可行性问题
+
+**[⬆ Back to Top](#table-of-contents)**

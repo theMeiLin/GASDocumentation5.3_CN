@@ -48,7 +48,7 @@
             "state": {
               "type": "search",
               "state": {
-                "query": "tag:#GAS文档",
+                "query": "tag:#4）",
                 "matchingCase": false,
                 "explainSearch": false,
                 "collapseAll": false,
@@ -65,12 +65,12 @@
               "state": {}
             }
           }
-        ]
+        ],
+        "currentTab": 1
       }
     ],
     "direction": "horizontal",
-    "width": 275.5,
-    "collapsed": true
+    "width": 275.5
   },
   "right": {
     "id": "e555dd6314b99512",
@@ -172,7 +172,7 @@
       "table-editor-obsidian:Advanced Tables Toolbar": false
     }
   },
-  "active": "43efc25b6cb9a12c",
+  "active": "fff1e32f67a29774",
   "lastOpenFiles": [
     "Images/derivedattribute.png",
     "Images/gameplayabilityworldreticle.png",
