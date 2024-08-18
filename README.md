@@ -33,7 +33,7 @@ GameplayAbilitySystem（GAS）插件由 Epic Games 开发，并随 Unreal Engine
 * 生成`GameplayCues`。
 * 通过连接到`CharacterMovementComponent`的`RootMotionSource`函数进行移动。
 
-**GAS 必须在 C++**中设置，但设计师可以在蓝图中创建 `GameplayAbilities` 和 ``GameplayEffects``。
+**GAS 必须在 C++** 中设置，但设计师可以在蓝图中创建 `GameplayAbilities` 和 ``GameplayEffects``。
 
 GAS 的当前问题：
 * `GameplayEffect`延迟协调（这导致了高延迟的玩家相较于低延迟的玩家，在使用冷却时间较短的能力时，能够触发的频率较低，进而影响了游戏的公平性和玩家体验）。
