@@ -2288,3 +2288,157 @@ virtual void InitGameplayCueParameters(FGameplayCueParameters& CueParameters, co
 ```
 
 **[⬆ Back to Top](#table-of-contents)**
+
+#### 4.8.5 Gameplay Cue Manager
+默认情况下，`GameplayCueManager` 会在整个游戏目录中扫描 `GameplayCueNotifies` 并在开始游戏时将它们加载到内存中。我们可以通过在 `DefaultGame.ini` 中设置来更改 `GameplayCueManager` 扫描的路径。
+
+```  
+[/Script/GameplayAbilities.AbilitySystemGlobals]  
+GameplayCueNotifyPaths="/Game/GASDocumentation/Characters"  
+```
+
+我们确实希望 `GameplayCueManager` 能够扫描并找到所有的 `GameplayCueNotifies`；但是，我们不希望它在开始游戏时异步加载每一个 `GameplayCueNotifies`。这样会导致无论这些 `GameplayCueNotifies` 及其引用的声音和粒子是否在关卡中使用，都会被加载到内存中。对于像 Paragon 这样的大型游戏来说，这可能会导致数百兆字节不必要的资产占用内存，并在启动时造成卡顿和游戏冻结。
+
+一种替代方案是在启动时仅异步加载游戏过程中触发的 `GameplayCues`。这样做可以减少不必要的内存使用，并避免因异步加载每个 `GameplayCue` 可能导致的游戏硬冻结，代价是首次触发特定 `GameplayCue` 时可能会出现延迟效果。对于 SSD 来说，这种潜在的延迟是不存在的。我没有在 HDD 上进行过测试。如果在 UE 编辑器中使用此选项，在首次加载 `GameplayCues` 时，如果编辑器需要编译粒子系统，可能会出现轻微的卡顿或冻结。在构建版本中这不是问题，因为粒子系统已经预先编译好了。
+
+首先，我们需要继承 `UGameplayCueManager` 并告诉 `AbilitySystemGlobals` 类使用我们的 `UGameplayCueManager` 子类，在 `DefaultGame.ini` 中进行配置。
+
+```  
+[/Script/GameplayAbilities.AbilitySystemGlobals]  
+GlobalGameplayCueManagerClass="/Script/ParagonAssets.PBGameplayCueManager"  
+```
+
+在我们的 `UGameplayCueManager` 子类中，重写 `ShouldAsyncLoadRuntimeObjectLibraries()`。
+
+```c++  
+virtual bool ShouldAsyncLoadRuntimeObjectLibraries() const override  
+{  
+    return false;
+}  
+```
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.8.6 Prevent Gameplay Cues from Firing
+有时我们不希望触发 `GameplayCues`。例如，如果我们阻挡了一次攻击，我们可能不希望播放与伤害 `GameplayEffect` 关联的撞击效果，或者想要播放自定义的效果。我们可以在 [`GameplayEffectExecutionCalculations`](#concepts-ge-ec) 中通过调用 `OutExecutionOutput.MarkGameplayCuesHandledManually()` 来实现这一点，然后手动将我们的 `GameplayCue` 事件发送给 `Target` 或 `Source` 的 `ASC`。
+
+如果你永远不希望在特定的 `ASC` 上触发任何 `GameplayCues`，你可以设置 `AbilitySystemComponent->bSuppressGameplayCues = true;`。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.8.7 Gameplay Cue Batching
+每个触发的 `GameplayCue` 都是一个不可靠的 NetMulticast RPC。在同时触发多个 `GCs` 的情况下，有一些优化方法可以将它们合并为一个 RPC 或者通过发送更少的数据来节省带宽。
+
+##### 4.8.7.1 Manual RPC
+假设你有一把霰弹枪，它可以发射八颗弹丸。这意味着有八个追踪和撞击的 `GameplayCues`。[GASShooter](https://github.com/tranek/GASShooter) 采取了一种较为简单的做法，即将所有追踪信息作为 [`TargetData`](#concepts-targeting-data) 存储在 [`EffectContext`](#concepts-ge-ec) 中，从而将它们合并为一个 RPC。虽然这种方法将 RPC 数量从八个减少到了一个，但它仍然在网络中发送了大量的数据（大约 500 字节）。一个更优化的方法是发送一个带有自定义结构的 RPC，在这个结构中高效地编码撞击位置，或者给接收端提供一个随机种子数以便重现或近似撞击位置。客户端随后解包这个自定义结构，并将其转换为 [本地执行的 `GameplayCues`](#concepts-gc-local)。
+
+工作原理如下：
+1. 声明一个 `FScopedGameplayCueSendContext`。这会抑制 `UGameplayCueManager::FlushPendingCues()` 直到它超出作用域，意味着所有的 `GameplayCues` 将被排队直到 `FScopedGameplayCueSendContext` 超出作用域。
+2. 重写 `UGameplayCueManager::FlushPendingCues()`，根据一些自定义的 `GameplayTag` 将可以批量处理的 `GameplayCues` 合并到你的自定义结构中，并将其作为 RPC 发送给客户端。
+3. 客户端接收到自定义结构后，将其解包成本地执行的 `GameplayCues`。
+
+当你的 `GameplayCues` 需要特定的参数，而这些参数不符合 `GameplayCueParameters` 提供的内容，并且你不想将它们添加到 `EffectContext` 中时（比如伤害数值、暴击指示器、护盾破坏指示器、致命一击指示器等），也可以采用这种方法。
+
+https://forums.unrealengine.com/development-discussion/c-gameplay-programming/1711546-fscopedgameplaycuesendcontext-gameplaycuemanager
+
+##### 4.8.7.2 Multiple GCs on one GE
+`GameplayEffect` 上的所有 `GameplayCues` 已经在一个 RPC 中发送。默认情况下，`UGameplayCueManager::InvokeGameplayCueAddedAndWhileActive_FromSpec()` 会发送整个 `GameplayEffectSpec`（但转换为 `FGameplayEffectSpecForRPC`）作为不可靠的 NetMulticast，无论 `ASC` 的 `Replication Mode` 如何。这可能会消耗大量的带宽，具体取决于 `GameplayEffectSpec` 中的内容。我们可以通过设置控制台变量 `AbilitySystem.AlwaysConvertGESpecToGCParams 1` 来优化这一点。这会将 `GameplayEffectSpecs` 转换为 `FGameplayCueParameter` 结构，并将其作为 RPC 发送，而不是发送整个 `FGameplayEffectSpecForRPC`。这可能会节省带宽，但也可能丢失一些信息，这取决于 `GESpec` 如何转换为 `GameplayCueParameters` 以及你的 `GCs` 需要知道哪些信息。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.8.8 Gameplay Cue Events
+`GameplayCues` 对应特定的 `EGameplayCueEvents`：
+
+| `EGameplayCueEvent` | 描述                                                                                                                                                                                                                                                                                                                         |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OnActive`          | 当 `GameplayCue` 被激活（添加）时调用。                                                                                                                                                                                                                                                                                    |
+| `WhileActive`       | 当 `GameplayCue` 处于活动状态时调用，即使它实际上并不是刚刚应用的（如正在进行中的加入等）。这不是 `Tick`！当 `GameplayCueNotify_Actor` 被添加或变得相关时，就像 `OnActive` 一样只调用一次。如果你需要 `Tick()`，可以直接使用 `GameplayCueNotify_Actor` 的 `Tick()`。毕竟它是一个 `AActor`。 |
+| `Removed`           | 当 `GameplayCue` 被移除时调用。响应此事件的蓝图 `GameplayCue` 函数是 `OnRemove`。                                                                                                                                                                                                             |
+| `Executed`          | 当 `GameplayCue` 执行时调用：即时效果或周期性的 `Tick()`。响应此事件的蓝图 `GameplayCue` 函数是 `OnExecute`。                                                                                                                                                                     |
+
+在 `GameplayCue` 开始时发生的事情，但晚加入的玩家错过也无妨的，使用 `OnActive`。对于 `GameplayCue` 中持续的效果，希望晚加入的玩家也能看到的，使用 `WhileActive`。例如，如果你有一个 MOBA 游戏中塔楼结构爆炸的 `GameplayCue`
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.8.9 Gameplay Cue Reliability
+通常来说，`GameplayCues` 应被视为不可靠的，因此不适合用于直接影响游戏玩法的任何内容。
+
+**执行的 `GameplayCues`:** 这些 `GameplayCues` 通过不可靠的多播应用，并始终是不可靠的。
+
+**从 `GameplayEffects` 应用的 `GameplayCues`:**
+* 自主代理可靠地接收 `OnActive`、`WhileActive` 和 `OnRemove`  
+`FActiveGameplayEffectsContainer::NetDeltaSerialize()` 调用 `UAbilitySystemComponent::HandleDeferredGameplayCues()` 来调用 `OnActive` 和 `WhileActive`。`FActiveGameplayEffectsContainer::RemoveActiveGameplayEffectGrantedTagsAndModifiers()` 调用 `OnRemoved`。
+* 模拟代理可靠地接收 `WhileActive` 和 `OnRemove`  
+`UAbilitySystemComponent::MinimalReplicationGameplayCues` 的复制调用 `WhileActive` 和 `OnRemove`。`OnActive` 事件由不可靠的多播调用。
+
+**没有 `GameplayEffect` 应用的 `GameplayCues`:**
+* 自主代理可靠地接收 `OnRemove`  
+`OnActive` 和 `WhileActive` 事件由不可靠的多播调用。
+* 模拟代理可靠地接收 `WhileActive` 和 `OnRemove`  
+`UAbilitySystemComponent::MinimalReplicationGameplayCues` 的复制调用 `WhileActive` 和 `OnRemove`。`OnActive` 事件由不可靠的多播调用。
+
+如果你需要 `GameplayCue` 中的某些内容是“可靠的”，那么从 `GameplayEffect` 应用它，并使用 `WhileActive` 添加视觉特效，使用 `OnRemove` 移除视觉特效。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 4.9 Ability System Globals
+[`AbilitySystemGlobals`](https://docs.unrealengine.com/en-US/API/Plugins/GameplayAbilities/UAbilitySystemGlobals/index.html) 类持有有关 GAS 的全局信息。大多数变量都可以从 `DefaultGame.ini` 文件中设置。通常你不需要直接与这个类交互，但你应该了解它的存在。如果你需要对 `GameplayCueManager` 或 `GameplayEffectContext` 这样的类进行子类化，你需要通过 `AbilitySystemGlobals` 来实现。
+
+要对 `AbilitySystemGlobals` 进行子类化，需要在 `DefaultGame.ini` 文件中设置类名：
+
+```  
+[/Script/GameplayAbilities.AbilitySystemGlobals]  
+AbilitySystemGlobalsClassName="/Script/ParagonAssets.PAAbilitySystemGlobals"  
+```
+
+#### 4.9.1 InitGlobalData()
+从 UE 4.24 版本开始，现在必须调用 `UAbilitySystemGlobals::Get().InitGlobalData()` 才能使用 [`TargetData`](#concepts-targeting-data)，否则你会遇到与 `ScriptStructCache` 相关的错误，并且客户端将从服务器断开连接。这个函数只需要在一个项目中调用一次。Fortnite 在 `UAssetManager::StartInitialLoading()` 中调用它，而 Paragon 在 `UEngine::Init()` 中调用它。我发现将它放在 `UAssetManager::StartInitialLoading()` 中是一个好位置，正如示例项目所示。我认为这是应该复制到你的项目中的样板代码，以避免 `TargetData` 的问题。
+
+如果你在使用 `AbilitySystemGlobals` 的 `GlobalAttributeSetDefaultsTableNames` 时遇到崩溃，你可能需要像 Fortnite 在 `AssetManager` 或 `GameInstance` 中那样稍后调用 `UAbilitySystemGlobals::Get().InitGlobalData()`。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 4.10 Prediction
+GAS 自带了对客户端预测的支持；然而，并不是所有内容都会被预测。在 GAS 中，客户端预测意味着客户端不必等待服务器的许可来激活 `GameplayAbility` 并应用 `GameplayEffects`。它可以“预测”服务器会给予它这样的权限，并预测它将应用 `GameplayEffects` 的目标。服务器在网络延迟时间之后运行 `GameplayAbility`，并告诉客户端其预测是否正确。如果客户端在其预测中有误，它将“回滚”其由于“预测错误”而做出的更改以匹配服务器的状态。
+
+关于 GAS 预测的权威来源是插件源代码中的 `GameplayPrediction.h`。
+
+Epic 的理念是只预测那些“可以侥幸成功”的事情。例如，Paragon 和 Fortnite 不预测伤害。它们很可能使用了无法预测的 [`ExecutionCalculations`](#concepts-ge-ec) 来处理伤害。这并不是说你不能尝试预测某些事情，比如伤害。当然，如果你能做到并且效果良好，那非常好。
+
+> ... 我们也没有完全采用一个“无缝且自动预测一切”的解决方案。我们仍然认为玩家预测最好保持在最低限度（意思是：只预测你能侥幸成功的最少的东西）。
+
+*来自 Epic 的 Dave Ratti 对新的 [Network Prediction Plugin](#concepts-p-npp) 的评论*
+
+**被预测的内容：**
+> * 能力激活
+> * 触发事件
+> * `GameplayEffect` 应用：
+>    * 属性修改（例外：执行不当前预测，仅限属性修饰符）
+>    * `GameplayTag` 修改
+> * `GameplayCue` 事件（既包括预测内的 `GameplayEffect` 也包括独立的）
+> * 动画序列
+> * 移动（内置到 UE 的 `UCharacterMovement`）
+
+**未被预测的内容：**
+> * `GameplayEffect` 移除
+> * `GameplayEffect` 周期性效果（如持续伤害）
+
+*摘自 `GameplayPrediction.h`*
+
+虽然我们可以预测 `GameplayEffect` 的应用，但我们无法预测 `GameplayEffect` 的移除。一种解决此限制的方法是在想要移除 `GameplayEffect` 时预测相反的效果。例如，如果我们预测了降低 40% 的移动速度，可以通过应用增加 40% 的移动速度来预测性地移除它。然后同时移除这两个 `GameplayEffects`。但这并不适用于所有情况，并且对于预测 `GameplayEffect` 移除的支持仍然是需要的。Epic 的 Dave Ratti 表达了希望在未来版本的 GAS 中添加这一功能的愿望。
+
+因为我们无法预测 `GameplayEffect` 的移除，所以我们无法完全预测 `GameplayAbility` 的冷却时间，并且没有相反的 `GameplayEffect` 解决方案。服务器复制的 `Cooldown GE` 将存在于客户端上，任何试图绕过这一点的行为（例如使用 `Minimal` 复制模式）都将被服务器拒绝。这意味着高延迟的客户端需要更长的时间来告知服务器进入冷却状态，并接收服务器的 `Cooldown GE` 移除。这意味着高延迟的玩家将比低延迟的玩家有更低的射击频率，从而处于不利地位。Fortnite 通过使用自定义记账而不是 `Cooldown GEs` 来避免这个问题。
+
+关于预测伤害，我个人不建议这样做，尽管这是大多数人开始使用 GAS 时首先尝试的事情之一。我特别不建议尝试预测死亡。虽然你可以预测伤害，但这样做很棘手。如果你错误地预测了伤害的应用，玩家会看到敌人的生命值突然回升。如果你尝试预测死亡，这种情况尤其尴尬和令人沮丧。假设你错误地预测了一个 `Character` 的死亡，它开始变成布娃娃状态，但在服务器纠正后又停止了布娃娃状态并继续向你射击。
+
+**注意：** 可以无缝预测改变属性的 `Instant` `GameplayEffects`（如 `Cost GEs`），但对于其他角色的 `Instant` 属性变化则会出现短暂的异常或“闪烁”。预测的 `Instant` `GameplayEffects` 实际上被当作 `Infinite` `GameplayEffects` 处理，以便在预测错误时可以回滚。当服务器的 `GameplayEffect` 应用时，可能会存在两个相同的 `GameplayEffect`，导致修饰符被重复应用或暂时不应用。最终它会自我修正，但有时这种闪烁会被玩家注意到。
+
+GAS 的预测实现试图解决的问题包括：
+> 1. “我可以这样做吗？”基本的预测协议。
+> 2. “撤销”如何在预测失败时撤销副作用。
+> 3. “重做”如何避免重新播放我们本地预测但又从服务器复制过来的副作用。
+> 4. “完整性”如何确保我们确实预测了所有的副作用。
+> 5. “依赖关系”如何管理相互依赖的预测和预测事件链。
+> 6. “覆盖”如何预测性地覆盖原本由服务器复制/拥有的状态。
+
+*摘自 `GameplayPrediction.h`*
