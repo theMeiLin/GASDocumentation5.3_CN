@@ -2442,3 +2442,105 @@ GAS 的预测实现试图解决的问题包括：
 > 6. “覆盖”如何预测性地覆盖原本由服务器复制/拥有的状态。
 
 *摘自 `GameplayPrediction.h`*
+
+**[⬆ Back to Top](#table-of-contents)**
+#### 4.10.1 Prediction Key
+GAS 的预测机制基于 `Prediction Key` 这一概念，这是一个整数标识符，客户端在激活 `GameplayAbility` 时生成。
+
+* 客户端在激活 `GameplayAbility` 时生成预测键。这是 `Activation Prediction Key`。
+* 客户端通过 `CallServerTryActivateAbility()` 将此预测键发送给服务器。
+* 客户端将其预测键添加到所有在预测键有效期内应用的 `GameplayEffects` 上。
+* 客户端的预测键超出作用域。在同一 `GameplayAbility` 中进一步预测的效果需要一个新的 [Scoped Prediction Window](#concepts-p-windows)。
+
+
+* 服务器从客户端接收预测键。
+* 服务器将其预测键添加到所有应用的 `GameplayEffects` 上。
+* 服务器将预测键复制回客户端。
+
+
+* 客户端接收到带有用于应用的预测键的复制 `GameplayEffects`。如果任何复制的 `GameplayEffects` 与客户端使用相同预测键应用的 `GameplayEffects` 匹配，则说明预测正确。在客户端移除其预测的版本之前，目标上会有两个相同的 `GameplayEffect` 的副本。
+* 客户端从服务器接收回预测键。这是 `Replicated Prediction Key`。此预测键现在标记为过期。
+* 客户端移除 **所有** 使用现在已过期的复制预测键创建的 `GameplayEffects`。服务器复制的 `GameplayEffects` 将持续存在。客户端添加的任何 `GameplayEffects` 如果没有从服务器接收到匹配的复制版本，则被认为是预测错误的。
+
+预测键保证在 `GameplayAbilities` 中从 `Activation` 开始的一个原子指令组 "窗口" 内有效，该窗口从激活预测键开始。你可以认为这个窗口只在一个帧内有效。任何来自延迟动作 `AbilityTasks` 的回调将不再拥有有效的预测键，除非 `AbilityTask` 有一个内置的同步点，该同步点会生成一个新的 [Scoped Prediction Window](#concepts-p-windows)。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.10.2 Creating New Prediction Windows in Abilities
+为了在 AbilityTasks 的回调中预测更多动作，我们需要创建一个新的 Scoped Prediction Window 并生成一个新的 Scoped Prediction Key。这有时被称为客户端和服务器之间的同步点（Synch Point）。某些 AbilityTasks，如所有与输入相关的任务，具有内置功能来创建新的 Scoped Prediction Window，这意味着这些 AbilityTasks 回调中的原子代码可以使用有效的 Scoped Prediction Key。其他任务，例如 WaitDelay 任务，并没有内置代码来为其回调创建新的 Scoped Prediction Window。如果你需要在没有内置 Scoped Prediction Window 创建功能的任务之后预测动作，比如 WaitDelay，那么你需要手动执行这一操作，使用带有 OnlyServerWait 选项的 WaitNetSync AbilityTask。当客户端遇到带有 OnlyServerWait 的 WaitNetSync 时，它会根据 GameplayAbility 的激活预测键生成一个新的 Scoped Prediction Key，并通过远程过程调用（RPC）将其发送给服务器，并将其添加到任何新应用的 GameplayEffects 中。当服务器遇到带有 OnlyServerWait 的 WaitNetSync 时，它会等待直到接收到客户端发送的新 Scoped Prediction Key 才继续执行。这个 Scoped Prediction Key 跟激活预测键一样发挥作用：被应用于 GameplayEffects 并复制回客户端以标记为过期。Scoped Prediction Key 在其超出作用范围之前都是有效的，即 Scoped Prediction Window 已关闭。因此，只有原子操作，而不是延迟操作，才能使用新的 Scoped Prediction Key。
+
+你可以根据需要创建任意数量的 Scoped Prediction Windows。
+
+如果你想为自己的自定义 AbilityTasks 添加同步点功能，请参考输入相关任务如何实质上将 WaitNetSync AbilityTask 的代码注入其中。
+
+注意： 使用 WaitNetSync 会导致服务器的 GameplayAbility 暂停执行，直到它接收到客户端的消息。这可能会被恶意用户利用，他们可以通过破解游戏并故意延迟发送新的 Scoped Prediction Key 来滥用这一点。虽然 Epic 对 WaitNetSync 的使用非常谨慎，但它建议如果这是一个担忧的话，可以考虑构建一个 AbilityTask 的新版本，该版本具有延迟自动继续执行的功能，即使没有接收到客户端的消息也是如此。
+
+示例项目在 Sprint GameplayAbility 中使用 WaitNetSync 来每次应用耐力消耗时创建一个新的 Scoped Prediction Window，以便能够预测它。理想情况下，在应用成本和冷却时间时，我们希望有一个有效的预测键。
+
+如果你有一个预测的 GameplayEffect 在客户端上重复播放两次，那么你的预测键可能是过期的，并且你正在经历“重做”问题。通常，你可以在应用 GameplayEffect 之前放置一个带有 OnlyServerWait 的 WaitNetSync AbilityTask 来创建一个新的 Scoped Prediction Key 从而解决这个问题。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.10.3 Predictively Spawning Actors
+在客户端上预测性地生成 `Actors` 是一个较为复杂的主题。GAS（Gameplay Ability System）本身并不直接提供处理这一功能的能力（`SpawnActor` `AbilityTask` 只会在服务器上生成 `Actor`）。关键的概念是在客户端和服务器上都生成一个可复制的 `Actor`。
+
+如果 `Actor` 仅用于装饰或不服务于实际的游戏玩法目的，简单的解决方案是覆盖 `Actor` 的 `IsNetRelevantFor()` 函数，以限制服务器向拥有者客户端进行复制。这样，拥有者客户端将拥有本地生成的版本，而服务器和其他客户端则拥有服务器复制的版本。
+
+```c++  
+bool APAReplicatedActorExceptOwner::IsNetRelevantFor(const AActor * RealViewer, const AActor * ViewTarget, const FVector & SrcLocation) const  
+{  
+    return !IsOwnedBy(ViewTarget);}  
+```
+
+如果生成的 `Actor` 影响游戏玩法，例如需要预测伤害的弹射物，则需要更高级的逻辑，这部分内容超出了本文档的范围。可以参考 Epic Games 在 GitHub 上的 UnrealTournament 项目，了解如何预测性地生成弹射物。在这个项目中，他们会为拥有者客户端生成一个虚拟的弹射物，该弹射物与服务器复制的弹射物同步。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.10.4 Future of Prediction in GAS
+`GameplayPrediction.h` 提及未来可能增加预测 `GameplayEffect` 移除和周期性 `GameplayEffects` 的功能。
+
+Epic 的 Dave Ratti [表达了兴趣](https://epicgames.ent.box.com/s/m1egifkxv3he3u3xezb9hzbgroxyhx89) 在修复预测冷却时间时的 `延迟补偿` 问题，该问题导致高延迟玩家相对于低延迟玩家处于不利地位。
+
+Epic 新推出的 [`Network Prediction` 插件](#concepts-p-npp) 预计将与 GAS 完全兼容，就像之前的 `CharacterMovementComponent` 一样。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.10.5 Network Prediction Plugin
+Epic 最近启动了一项计划，旨在用新的 `Network Prediction` 插件替换 `CharacterMovementComponent`。此插件仍处于非常早期的阶段，但在 Unreal Engine 的 GitHub 上已可供极早期访问。现在还难以判断它将在哪个未来的引擎版本中首次以实验性的 beta 版本亮相。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 4.11 Targeting
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
