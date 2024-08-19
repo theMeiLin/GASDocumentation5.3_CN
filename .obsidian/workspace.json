@@ -4,11 +4,11 @@
     "type": "split",
     "children": [
       {
-        "id": "4d71e4906a2dafbf",
+        "id": "cbde4ae2233193da",
         "type": "tabs",
         "children": [
           {
-            "id": "43efc25b6cb9a12c",
+            "id": "788819393b08269f",
             "type": "leaf",
             "state": {
               "type": "markdown",
@@ -69,7 +69,8 @@
       }
     ],
     "direction": "horizontal",
-    "width": 275.5
+    "width": 275.5,
+    "collapsed": true
   },
   "right": {
     "id": "e555dd6314b99512",
@@ -171,10 +172,17 @@
       "table-editor-obsidian:Advanced Tables Toolbar": false
     }
   },
-  "active": "43efc25b6cb9a12c",
+  "active": "788819393b08269f",
   "lastOpenFiles": [
     "Images/activationfailedtags.png",
     "README.md",
+    "202408182138.md",
+    "Source/GASDocumentation/Private/Characters/Abilities/AsyncTaskCooldownChanged.cpp.md",
+    "Source/GASDocumentation/Private/Characters/Abilities",
+    "Source/GASDocumentation/Private/Characters",
+    "Source/GASDocumentation/Private",
+    "Source/GASDocumentation",
+    "Source",
     "Images/attributechange.png",
     "Images/derivedattribute.png",
     "Images/gameplayabilityworldreticle.png",
@@ -190,11 +198,6 @@
     "GASDocumentation-5.3/README.md",
     "GASDocumentation-5.3/Source/GASDocumentation/Public/Characters/Heroes/Abilities/GDGA_FireGun.h",
     "GASDocumentation-5.3/Source/GASDocumentation/Public/Characters/Abilities/AttributeSets/GDAttributeSetBase.h",
-    "GASDocumentation-5.3/Source/GASDocumentation/Public/Characters/Abilities/AbilityTasks/GDAT_WaitReceiveDamage.h",
-    "GASDocumentation-5.3/Source/GASDocumentation/Public/Characters/Abilities/AbilityTasks/GDAT_PlayMontageAndWaitForEvent.h",
-    "GASDocumentation-5.3/Source/GASDocumentation/Private/Characters/Heroes/Abilities/GDGA_FireGun.cpp",
-    "GASDocumentation-5.3/Source/GASDocumentation/Private/Characters/Abilities/AttributeSets/GDAttributeSetBase.cpp",
-    "GASDocumentation-5.3/Source/GASDocumentation/Private/Characters/Abilities/AbilityTasks/GDAT_WaitReceiveDamage.cpp",
     "2024-07-13.md",
     "2d.md",
     "未命名思维导图.md",
