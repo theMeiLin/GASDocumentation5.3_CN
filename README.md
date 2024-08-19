@@ -2613,6 +2613,132 @@ FName GetCoolNameFromTargetData(const FGameplayAbilityTargetDataHandle& Handle, 
 **[⬆ Back to Top](#table-of-contents)**
 
 #### 4.11.2 Target Actors
+`GameplayAbilities` 通过 `WaitTargetData` `AbilityTask` 创建 [`TargetActors`](https://docs.unrealengine.com/zh-CN/API/Plugins/GameplayAbilities/Abilities/AGameplayAbilityTargetActor/index.html)，用于可视化并捕获来自游戏世界的瞄准信息。`TargetActors` 可以选择性地使用 [`GameplayAbilityWorldReticles`](#concepts-targeting-reticles) 来显示当前的目标。确认后，瞄准信息将作为 [`TargetData`](#concepts-targeting-data) 返回，并可以传递给 `GameplayEffects`。
+
+`TargetActors` 基于 `AActor`，因此它们可以拥有任何类型的可见组件来表示**位置**和**方式**，例如静态网格体或贴花。静态网格体可用于可视化角色将建造的对象的位置。贴花可用于显示地面的效果范围。示例项目使用了带有地面贴花的 [`AGameplayAbilityTargetActor_GroundTrace`](https://docs.unrealengine.com/zh-CN/API/Plugins/GameplayAbilities/Abilities/AGameplayAbilityTargetActor_Grou-/index.html)，来代表流星技能的伤害效果范围。它们也可以不显示任何东西。例如，对于瞬间追踪到目标的命中扫描枪（如在[GASShooter](https://github.com/tranek/GASShooter)中使用的），就没有必要显示任何内容。
+
+它们通过基本的追踪或碰撞重叠来捕获瞄准信息，并根据 `TargetActor` 的实现将结果转换为 `FHitResults` 或 `AActor` 数组形式的 `TargetData`。`WaitTargetData` `AbilityTask` 通过其 `TEnumAsByte<EGameplayTargetingConfirmation::Type>` 参数确定目标何时被确认。当**不是**使用 `TEnumAsByte<EGameplayTargetingConfirmation::Type::Instant>` 时，`TargetActor` 通常会在 `Tick()` 中执行追踪/重叠，并根据其实现更新其位置至 `FHitResult`。虽然这在 `Tick()` 中执行追踪/重叠，但通常来说并不糟糕，因为它不会被复制，而且通常一次只有一个（尽管可能有多个）`TargetActor` 在运行。需要注意的是它使用了 `Tick()`，并且一些复杂的 `TargetActors` 可能会在其中做大量工作，例如 GASShooter 中火箭发射器的二级能力。虽然在 `Tick()` 中进行追踪对客户端非常响应迅速，但如果性能损失太大，你可以考虑降低 `TargetActor` 的帧率。在 `TEnumAsByte<EGameplayTargetingConfirmation::Type::Instant>` 的情况下，`TargetActor` 立即生成、产生 `TargetData` 并销毁。`Tick()` 从未被调用。
+
+| `EGameplayTargetingConfirmation::Type` | 目标何时被确认                                                                                                                                                                                                                                                                                                                                                 |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Instant`                              | 瞄准立即发生，无需特殊逻辑或用户输入决定何时“开火”。                                                                                                                                                                                                                                                                                                        |
+| `UserConfirmed`                        | 当用户通过绑定到 `Confirm` 输入的能力或调用 `UAbilitySystemComponent::TargetConfirm()` 来确认瞄准时，瞄准发生。`TargetActor` 还会响应绑定的 `Cancel` 输入或调用 `UAbilitySystemComponent::TargetCancel()` 来取消瞄准。                                                                                                                                          |
+| `Custom`                               | 游戏玩法瞄准能力负责通过调用 `UGameplayAbility::ConfirmTaskByInstanceName()` 决定瞄准数据何时准备就绪。`TargetActor` 还会响应 `UGameplayAbility::CancelTaskByInstanceName()` 来取消瞄准。                                                                                                                                            |
+| `CustomMulti`                          | 游戏玩法瞄准能力负责通过调用 `UGameplayAbility::ConfirmTaskByInstanceName()` 决定瞄准数据何时准备就绪。`TargetActor` 还会响应 `UGameplayAbility::CancelTaskByInstanceName()` 来取消瞄准。不应在数据生成后结束 `AbilityTask`。                                                                                          |
+
+并非每个 `EGameplayTargetingConfirmation::Type` 都被每个 `TargetActor` 支持。例如，`AGameplayAbilityTargetActor_GroundTrace` 不支持 `Instant` 确认。
+
+`WaitTargetData` `AbilityTask` 接受一个 `AGameplayAbilityTargetActor` 类作为参数，并将在每次激活 `AbilityTask` 时生成一个实例，并在 `AbilityTask` 结束时销毁 `TargetActor`。`WaitTargetDataUsingActor` `AbilityTask` 接收一个已经生成的 `TargetActor`，但在 `AbilityTask` 结束时仍会销毁它。这两种 `AbilityTasks` 都不够高效，因为它们要么生成新的 `TargetActor`，要么要求每次使用时都有新生成的 `TargetActor`。它们非常适合原型设计，但在生产环境中，如果你经常需要产生 `TargetData`（例如自动步枪的情况），你可能会考虑对其进行优化。GASShooter 有一个自定义的 `AGameplayAbilityTargetActor` 子类 [源代码](https://github.com/tranek/GASShooter/blob/master/Source/GASShooter/Public/Characters/Abilities/GSGATA_Trace.h) 和一个新的 `WaitTargetDataWithReusableActor` `AbilityTask` [源代码](https://github.com/tranek/GASShooter/blob/master/Source/GASShooter/Public/Characters/Abilities/AbilityTasks/GSAT_WaitTargetDataUsingActor.h)，允许你重复使用 `TargetActor` 而不必销毁它。
+
+默认情况下，`TargetActors` 不会被复制；但是，如果在游戏中有意义展示本地玩家正在瞄准的位置，可以让其他玩家看到，则可以使其复制。它们确实包括默认功能，通过 `WaitTargetData` `AbilityTask` 上的远程过程调用 (RPC) 与服务器通信。如果 `TargetActor` 的 `ShouldProduceTargetDataOnServer` 属性设置为 `false`，则客户端将在确认时通过 `CallServerSetReplicatedTargetData()` RPC 将其 `TargetData` 发送到服务器，在 `UAbilityTask_WaitTargetData::OnTargetDataReadyCallback()` 中实现。如果 `ShouldProduceTargetDataOnServer` 设置为 `true`，客户端将发送通用确认事件 `EAbilityGenericReplicatedEvent::GenericConfirm` RPC 到服务器，在 `UAbilityTask_WaitTargetData::OnTargetDataReadyCallback()` 中实现，服务器将在接收到 RPC 后执行追踪或重叠检查以在服务器上生成数据。如果客户端取消瞄准，它将发送通用取消事件 `EAbilityGenericReplicatedEvent::GenericCancel` RPC 到服务器，在 `UAbilityTask_WaitTargetData::OnTargetDataCancelledCallback()` 中实现。正如你所见，`TargetActor` 和 `WaitTargetData` `AbilityTask` 上有很多委托。`TargetActor` 响应输入以产生和广播 `TargetData` 准备好、确认或取消的委托。`WaitTargetData` 监听 `TargetActor` 的 `TargetData` 准备好、确认和取消的委托，并将这些信息转发回 `GameplayAbility` 和服务器。如果你将 `TargetData` 发送到服务器，你可能希望在服务器上进行验证，确保 `TargetData` 看起来合理，以防止作弊。直接在服务器上生成 `TargetData` 完全避免了这个问题，但可能会导致拥有客户端的预测不准确。
+
+根据你使用的特定 `AGameplayAbilityTargetActor` 子类的不同，`WaitTargetData` `AbilityTask` 节点上将暴露不同的 `ExposeOnSpawn` 参数。一些常见的参数包括：
+
+| 常见 `TargetActor` 参数 | 定义                                                                                                                                                                                                                                                                                                               |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Debug                   | 如果设置为 `true`，则在非发布构建中每当 `TargetActor` 执行追踪时都会绘制调试追踪/重叠信息。请注意，非 `Instant` 类型的 `TargetActors` 会在 `Tick()` 时执行追踪，因此这些调试绘制调用也会在 `Tick()` 时发生。                                                        |
+| Filter                  | [可选] 特殊结构用于在追踪/重叠发生时过滤（移除）目标中的 `Actors`。典型用途包括过滤掉玩家的 `Pawn`、要求目标属于特定类别等。有关更高级用途，请参阅 [目标数据过滤](#concepts-target-data-filters)。 |
+| Reticle Class           | [可选] `TargetActor` 将生成的 `AGameplayAbilityWorldReticle` 子类。                                                                                                                                                                                                                                                 |
+| Reticle Parameters      | [可选] 配置你的 Reticles。参阅 [Reticles](#concepts-targeting-reticles)。                                                                                                                                                                                                                                             |
+| Start Location          | 特殊结构，指定追踪应该从何处开始。通常这将是玩家的视角、武器的枪口或 `Pawn` 的位置。                                                                                                                                                                                                      |
+
+使用默认的 `TargetActor` 类，只有当 `Actors` 直接处于追踪/重叠范围内时，它们才是有效的目标。一旦它们离开追踪/重叠范围（比如移动或你转移视线），它们就不再有效。如果你想让 `TargetActor` 记住最后一个或多个有效目标，你需要在自定义 `TargetActor` 类中添加此功能。我将这些称为持久目标，因为它们将持续存在直到 `TargetActor` 收到确认或取消信号，或者 `TargetActor` 在其追踪/重叠中找到新的有效目标，或者目标不再有效（被销毁）。GASShooter 在其火箭发射器的次级能力——追踪火箭的目标选择中使用了持久目标。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.11.3 Target Data Filters
+使用 `Make GameplayTargetDataFilter` 和 `Make Filter Handle` 节点，你可以过滤掉玩家的 `Pawn` 或仅选择特定类别。如果你需要更高级的过滤功能，你可以继承 `FGameplayTargetDataFilter` 并覆写 `FilterPassesForActor` 函数。
+
+```c++  
+USTRUCT(BlueprintType)  
+struct GASDOCUMENTATION_API FGDNameTargetDataFilter : public FGameplayTargetDataFilter  
+{  
+    GENERATED_BODY()  
+    /** Returns true if the actor passes the filter and will be targeted */    
+    virtual bool FilterPassesForActor(const AActor* ActorToBeFiltered) const override;
+};  
+```
+
+然而，这并不能直接应用于 `Wait Target Data` 节点，因为它需要一个 `FGameplayTargetDataFilterHandle`。必须创建一个新的自定义 `Make Filter Handle` 来接受这个子类：
+
+```c++  
+FGameplayTargetDataFilterHandle UGDTargetDataFilterBlueprintLibrary::MakeGDNameFilterHandle(
+							FGDNameTargetDataFilter Filter, AActor* FilterActor)  
+{  
+    FGameplayTargetDataFilter* NewFilter = new FGDNameTargetDataFilter(Filter);    
+    NewFilter->InitializeFilterContext(FilterActor);  
+    FGameplayTargetDataFilterHandle FilterHandle;    
+    FilterHandle.Filter = TSharedPtr<FGameplayTargetDataFilter>(NewFilter); 
+       
+    return FilterHandle;
+}  
+```
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.11.4 Gameplay Ability World Reticles
+[`AGameplayAbilityWorldReticles`](https://docs.unrealengine.com/en-US/API/Plugins/GameplayAbilities/Abilities/AGameplayAbilityWorldReticle/index.html) (`Reticles`) 可视化显示你在使用非 `Instant` 确认的 [`TargetActors`](#concepts-targeting-actors) 进行瞄准时所瞄准的对象是谁。`TargetActors` 负责所有 `Reticles` 的生成和销毁生命周期。`Reticles` 是 `AActors`，因此可以使用任何类型的视觉组件来表示。如 [GASShooter](https://github.com/tranek/GASShooter) 中所示的一个常见实现是使用 `WidgetComponent` 在屏幕空间中显示 UMG Widget（始终面向玩家的相机）。`Reticles` 不知道它们位于哪个 `AActor` 上，但你可以在自定义 `TargetActor` 中实现这一功能。`TargetActors` 通常会在每次 `Tick()` 时更新 `Reticle` 的位置至目标的位置。
+
+GASShooter 使用 `Reticles` 显示火箭发射器次级能力追踪火箭锁定的目标。敌人身上的红色指示器就是 `Reticle`。类似的白色图像则是火箭发射器的准星。
+![GASShooter 中的 Reticles](https://github.com/tranek/GASDocumentation/raw/master/Images/gameplayabilityworldreticle.png)
+
+`Reticles` 提供了一些 `BlueprintImplementableEvents` 供设计师使用（它们旨在使用蓝图开发）：
+
+```c++  
+/** Called whenever bIsTargetValid changes value. */  
+UFUNCTION(BlueprintImplementableEvent, Category = Reticle)  
+void OnValidTargetChanged(bool bNewValue);  
+  
+/** Called whenever bIsTargetAnActor changes value. */  
+UFUNCTION(BlueprintImplementableEvent, Category = Reticle)  
+void OnTargetingAnActor(bool bNewValue);  
+  
+UFUNCTION(BlueprintImplementableEvent, Category = Reticle)  
+void OnParametersInitialized();  
+  
+UFUNCTION(BlueprintImplementableEvent, Category = Reticle)  
+void SetReticleMaterialParamFloat(FName ParamName, float value);  
+  
+UFUNCTION(BlueprintImplementableEvent, Category = Reticle)  
+void SetReticleMaterialParamVector(FName ParamName, FVector value);  
+```
+
+`Reticles` 可以选择性地使用由 `TargetActor` 提供的 [`FWorldReticleParameters`](https://docs.unrealengine.com/en-US/API/Plugins/GameplayAbilities/Abilities/FWorldReticleParameters/index.html) 进行配置。默认结构只提供了一个变量 `FVector AOEScale`。虽然理论上你可以继承这个结构，但是 `TargetActor` 只会接受基础结构。不允许这个结构被继承似乎有些短视，尤其是在默认的 `TargetActors` 中。然而，如果你创建自己的自定义 `TargetActor`，你可以提供自己的自定义 Reticle 参数结构，并在生成它们时手动传递给 `AGameplayAbilityWorldReticles` 的子类。
+
+`Reticles` 默认情况下不会复制，但如果对你的游戏来说显示本地玩家正在瞄准谁对其他玩家有意义的话，你可以使它们复制。
+
+使用默认的 `TargetActors` 时，`Reticles` 只会在当前有效的目标上显示。例如，如果你使用 `AGameplayAbilityTargetActor_SingleLineTrace` 来追踪目标，`Reticle` 只会在敌人直接处于追踪路径上时出现。如果你转移视线，敌人就不再是有效的目标，`Reticle` 也会消失。如果你想让 `Reticle` 始终停留在最后一个有效的目标上，你需要自定义 `TargetActor` 以便记住最后一个有效的目标并持续在它们身上显示 `Reticle`。我将这些称为持久目标，因为它们将持续存在直到 `TargetActor` 收到确认或取消信号，或者 `TargetActor` 在其追踪/重叠中找到新的有效目标，或者目标不再有效（被销毁）。GASShooter 在其火箭发射器的次级能力追踪火箭的目标选择中使用了持久目标。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.11.5 Gameplay Effect Containers Targeting
+[`GameplayEffectContainers`](#concepts-ge-containers) 提供了一种可选且高效的产生 [`TargetData`](#concepts-targeting-data) 的方式。这种目标选择在客户端和服务器上应用 `EffectContainer` 时立即进行。它比使用 [`TargetActors`](#concepts-targeting-actors) 更高效，因为它在目标对象的 CDO 上运行（无需生成和销毁 `Actors`），但它缺乏玩家输入，立即发生而无需确认，无法取消，并且不能从客户端向服务器发送数据（在客户端和服务器上都产生数据）。它适用于即时追踪和碰撞重叠。Epic 的 [Action RPG 示例项目](https://www.unrealengine.com/marketplace/en-US/product/action-rpg) 包含了两种使用容器的目标选择示例——针对能力拥有者以及从事件中提取 `TargetData`。它还在蓝图中实现了一种即时球体追踪，追踪位置相对于玩家有一定偏移（由子蓝图类设定）。你可以在 C++ 或蓝图中继承 `URPGTargetType` 来创建自己的目标选择类型。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+## 5. Commonly Implemented Abilities and Effects
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
