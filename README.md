@@ -2512,14 +2512,107 @@ Epic 最近启动了一项计划，旨在用新的 `Network Prediction` 插件�
 
 ### 4.11 Targeting
 
+#### 4.11.1 Target Data
+### `FGameplayAbilityTargetData`
 
+`FGameplayAbilityTargetData` 是一种通用结构，用于存储目标数据，这些数据旨在在网络间传递。`TargetData` 通常会持有 `AActor`/`UObject` 引用、`FHitResults` 以及其他通用的位置、方向和起源信息。然而，你可以通过继承它来自定义几乎任何你想放入的数据，作为一种简单的方式来 [在 `GameplayAbilities` 中传递数据](#concepts-ga-data)。基础结构 `FGameplayAbilityTargetData` 不打算直接使用，而是应该被继承。`GAS` 自带了一些位于 `GameplayAbilityTargetTypes.h` 中的 `FGameplayAbilityTargetData` 子类。
 
+`TargetData` 通常由 [`Target Actors`](#concepts-targeting-actors) 或者 **手动创建**，并通过 [`EffectContext`](#concepts-ge-context) 被 [`AbilityTasks`](#concepts-at) 和 [`GameplayEffects`](#concepts-ge) 消费。由于存在于 `EffectContext` 中，[`Executions`](#concepts-ge-ec)、[`MMCs`](#concepts-ge-mmc)、[`GameplayCues`](#concepts-gc) 以及在 [`AttributeSet`](#concepts-as) 后端的函数都可以访问 `TargetData`。
 
+我们通常不会直接传递 `FGameplayAbilityTargetData`，而是使用一个 `FGameplayAbilityTargetDataHandle`，它内部包含了一个指向 `FGameplayAbilityTargetData` 的 `TArray`。这个中间结构为 `TargetData` 提供了多态支持。
 
+继承自 `FGameplayAbilityTargetData` 的示例：
 
+```c++  
+USTRUCT(BlueprintType)  
+struct MYGAME_API FGameplayAbilityTargetData_CustomData : public FGameplayAbilityTargetData  
+{  
+    GENERATED_BODY()public:  
+  
+    FGameplayAbilityTargetData_CustomData()    { }  
+    UPROPERTY()    FName CoolName = NAME_None;  
+    UPROPERTY()    FPredictionKey MyCoolPredictionKey;  
+    // This is required for all child structs of FGameplayAbilityTargetData    
+    virtual UScriptStruct* GetScriptStruct() const override    
+    {        
+	    return FGameplayAbilityTargetData_CustomData::StaticStruct();    
+    }  
+    // This is required for all child structs of FGameplayAbilityTargetData    
+    bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess)    
+    {        // The engine already defined NetSerialize for FName & FPredictionKey, thanks Epic!        
+	    CoolName.NetSerialize(Ar, Map, bOutSuccess);        
+	    MyCoolPredictionKey.NetSerialize(Ar, Map, bOutSuccess);        
+	    bOutSuccess = true;        
+    
+	    return true;    
+    }
+}  
+  
+template<>  
+struct TStructOpsTypeTraits<FGameplayAbilityTargetData_CustomData> : public TStructOpsTypeTraitsBase2<FGameplayAbilityTargetData_CustomData>  
+{  
+    enum    
+    {        
+	    WithNetSerializer = true // This is REQUIRED for FGameplayAbilityTargetDataHandle net serialization to work    
+    };
+};  
+```
 
+要将目标数据添加到句柄：
 
+```c++  
+UFUNCTION(BlueprintPure)  
+FGameplayAbilityTargetDataHandle MakeTargetDataFromCustomName(const FName CustomName)  
+{  
+    // Create our target data type,    
+    // Handle's automatically cleanup and delete this data when the handle is destructed,   
+    // if you don't add this to a handle then be careful because this deals with memory management and memory leaks so its safe to just always add it to a handle at some point in the frame!  
+	    FGameplayAbilityTargetData_CustomData* MyCustomData = new             FGameplayAbilityTargetData_CustomData();    
+    // Setup the struct's information to use the inputted name and any other changes we may want to do    
+    MyCustomData->CoolName = CustomName;        
+    // Make our handle wrapper for Blueprint usage  
+    FGameplayAbilityTargetDataHandle Handle;    
+    // Add the target data to our handle    
+    Handle.Add(MyCustomData);    
+    // Output our handle to Blueprint    
+    
+    return Handle;
+    }  
+```
 
+为了获取值，需要进行类型安全检查，因为从 `FGameplayAbilityTargetDataHandle` 的目标数据中获取值的唯一方式是使用通用的 C/C++ 类型转换，这种方式 **不是类型安全的**，可能会导致对象切片和崩溃。对于类型检查，有多种方法可以实现（实际上可以根据个人喜好选择），两种常见的方法是：
+
+- **Gameplay 标签**：你可以使用子类层次结构，在这种情况下，你知道任何时候特定代码架构的功能发生时，可以对基类父类型进行类型转换并获取其 Gameplay 标签，然后与这些标签进行比较来确定是否对继承的类进行类型转换。
+- **Script 结构体和静态结构体**：你可以直接进行类比较（这可能涉及很多 IF 语句或创建一些模板函数），下面是一个这样的例子。基本上，你可以从任何 `FGameplayAbilityTargetData` 获取 Script 结构体（这是它作为 `USTRUCT` 的一个优点，并要求任何继承的类在 `GetScriptStruct` 中指定结构体类型），并检查它是否是你想要的类型。
+
+```c++  
+UFUNCTION(BlueprintPure)  
+FName GetCoolNameFromTargetData(const FGameplayAbilityTargetDataHandle& Handle, const int Index)  
+{     
+    // NOTE, there is two versions of this '::Get(int32 Index)' function;   
+    // 1) const version that returns 'const FGameplayAbilityTargetData*', good for reading target data values   
+    // 2) non-const version that returns 'FGameplayAbilityTargetData*', good for modifying target data values  
+    FGameplayAbilityTargetData* Data = Handle.Get(Index); // This will valid check the index for you      
+    // Valid check we have something to use, null data means nothing to cast for  
+    if(Data == nullptr)    
+    {        
+	    return NAME_None;    
+	}    
+	// This is basically the type checking pass, static_cast does not have type safety, this is why we do this check.    
+	// If we don't do this then it will object slice the struct and thus we have no way of making sure its that type.    
+	if(Data->GetScriptStruct() == FGameplayAbilityTargetData_CustomData::StaticStruct())    
+	{        
+		// Here is when you would do the cast because we know its the correct type already
+		FGameplayAbilityTargetData_CustomData* CustomData = static_cast<FGameplayAbilityTargetData_CustomData*>(Data);        
+		return CustomData->CoolName;  
+    }    
+    return NAME_None;
+}  
+```
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.11.2 Target Actors
 
 
 
