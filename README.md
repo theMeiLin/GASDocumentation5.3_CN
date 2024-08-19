@@ -2718,46 +2718,149 @@ void SetReticleMaterialParamVector(FName ParamName, FVector value);
 
 ## 5. Commonly Implemented Abilities and Effects
 
+### 5.1 Stun
+通常对于眩晕效果，我们希望取消角色的所有活动 `GameplayAbilities`，阻止新的 `GameplayAbility` 激活，并在整个眩晕期间禁止移动。示例项目中的 Meteor `GameplayAbility` 在击中目标时施加眩晕效果。
+
+为了取消目标的活动 `GameplayAbilities`，当眩晕 [`GameplayTag` 被添加](#concepts-gt-change)时，我们调用 `AbilitySystemComponent->CancelAbilities()`。
+
+为了防止在眩晕期间激活新的 `GameplayAbilities`，`GameplayAbilities` 在它们的 [`Activation Blocked Tags` `GameplayTagContainer`](#concepts-ga-tags) 中被赋予眩晕 `GameplayTag`。
+
+为了在眩晕期间禁止移动，我们在 `CharacterMovementComponent` 的 `GetMaxSpeed()` 函数中进行覆盖，在拥有眩晕 `GameplayTag` 时返回 0。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 5.2 Sprint
+示例项目提供了一个如何冲刺的例子——在按住 `Left Shift` 时跑得更快。
+
+更快的移动是由 `CharacterMovementComponent` 通过网络向服务器发送一个标志来进行预测处理的。详情请参阅 `GDCharacterMovementComponent.h/cpp`。
+
+`GA` 处理响应 `Left Shift` 输入，告诉 `CMC` 开始和停止冲刺，并在按住 `Left Shift` 时预测性地消耗耐力。详情请参阅 `GA_Sprint_BP`。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 5.3 Aim Down Sights
+示例项目处理这种方式与冲刺完全相同，只是减少移动速度而不是增加它。
+
+有关预测性减少移动速度的详细信息，请参阅 `GDCharacterMovementComponent.h/cpp`。
+
+有关处理输入的详细信息，请参阅 `GA_AimDownSight_BP`。瞄准时没有耐力成本。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 5.4 Lifesteal
+我在伤害的 [`ExecutionCalculation`](#concepts-ge-ec) 内部处理生命偷取。`GameplayEffect` 将具有一个像 `Effect.CanLifesteal` 这样的 `GameplayTag`。`ExecutionCalculation` 检查 `GameplayEffectSpec` 是否具有该 `Effect.CanLifesteal` `GameplayTag`。如果存在该 `GameplayTag`，`ExecutionCalculation` [创建一个动态的 `Instant` `GameplayEffect`](#concepts-ge-dynamic)，其中修改量为要给予的生命值，并将其重新应用于 `Source` 的 `ASC`。
+
+```c++  
+if (SpecAssetTags.HasTag(FGameplayTag::RequestGameplayTag(FName("Effect.Damage.CanLifesteal"))))  
+{  
+    float Lifesteal = Damage * LifestealPercent;  
+    UGameplayEffect* GELifesteal = NewObject<UGameplayEffect>(GetTransientPackage(), FName(TEXT("Lifesteal")));    
+    GELifesteal->DurationPolicy = EGameplayEffectDurationType::Instant;  
+    int32 Idx = GELifesteal->Modifiers.Num();    
+    GELifesteal->Modifiers.SetNum(Idx + 1);    
+    FGameplayModifierInfo& Info = GELifesteal->Modifiers[Idx];    
+    Info.ModifierMagnitude = FScalableFloat(Lifesteal);    
+    Info.ModifierOp = EGameplayModOp::Additive;    
+    Info.Attribute = UPAAttributeSetBase::GetHealthAttribute();  
+    SourceAbilitySystemComponent->ApplyGameplayEffectToSelf(GELifesteal, 1.0f, SourceAbilitySystemComponent->MakeEffectContext());
+}  
+```
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 5.5 Generating a Random Number on Client and Server
+有时你需要在 `GameplayAbility` 内生成一个“随机”数字，比如用于子弹后坐力或散布。客户端和服务器都需要生成相同的随机数。为此，我们必须在激活 `GameplayAbility` 时设置相同的 `随机种子`。每次激活 `GameplayAbility` 时，你都需要设置 `随机种子`，以防客户端错误预测激活而导致其随机数序列与服务器不同步。
+
+| 设置种子的方法                                                            | 描述                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 使用激活预测键                                                             | `GameplayAbility` 的激活预测键是一个 int16 类型的值，保证在客户端和服务器的 `Activation()` 中同步可用。你可以在客户端和服务器上都将其设置为 `随机种子`。这种方法的缺点是，预测键在每次游戏开始时总是从零开始，并且在生成键之间始终递增使用值。这意味着每场比赛都会有完全相同的随机数序列。这可能足够随机也可能不够随机，取决于你的需求。 |
+| 通过事件负载发送种子，当你激活 `GameplayAbility` 时                      | 通过事件激活你的 `GameplayAbility` 并通过复制的事件负载从客户端向服务器发送随机生成的种子。这允许更多的随机性，但客户端很容易通过作弊使其每次都发送相同的种子值。此外，通过事件激活 `GameplayAbilities` 会阻止它们通过输入绑定激活。                                                                                                                                                                    |
+
+如果你的随机偏差很小，大多数玩家可能不会注意到每局游戏的序列都是相同的，使用激活预测键作为 `随机种子` 应该能满足你的需求。如果你正在做更复杂的事情，需要防作弊功能，或许使用 `Server Initiated` `GameplayAbility` 会更好，这样服务器可以创建预测键或生成 `随机种子` 并通过事件负载发送。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 5.6 Critical Hits
+我在伤害的 [`ExecutionCalculation`](#concepts-ge-ec) 内部处理暴击。`GameplayEffect` 将具有一个像 `Effect.CanCrit` 这样的 `GameplayTag`。`ExecutionCalculation` 检查 `GameplayEffectSpec` 是否具有该 `Effect.CanCrit` `GameplayTag`。如果存在该 `GameplayTag`，`ExecutionCalculation` 生成一个对应于暴击几率的随机数（从 `Source` 捕获的 `Attribute`）并在成功时加上暴击伤害（也是从 `Source` 捕获的 `Attribute`）。因为我没有预测伤害，所以我不必担心同步客户端和服务器上的随机数生成器，因为 `ExecutionCalculation` 只会在服务器上运行。如果你尝试使用 `MMC` 预测性地执行伤害计算，则必须从 `GameplayEffectSpec->GameplayEffectContext->GameplayAbilityInstance` 获取 `随机种子` 的引用。
+
+看看 [GASShooter](https://github.com/tranek/GASShooter) 是如何处理爆头的。概念相同，只是它不依赖随机数来确定几率，而是检查 `FHitResult` 的骨骼名称。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 5.7 Non-Stacking Gameplay Effects but Only the Greatest Magnitude Actually Affects the Target
+在 Paragon 中，减速效果不会叠加。每个减速实例正常应用并跟踪其生命周期，但只有最大减速效果实际上影响 `Character`。GAS 通过 `AggregatorEvaluateMetaData` 为这种情况提供了开箱即用的支持。有关详细信息和实现，请参阅 [`AggregatorEvaluateMetaData()`](#concepts-as-onattributeaggregatorcreated)。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 5.8 Generate Target Data While Game is Paused
+如果你需要在等待从玩家的 `WaitTargetData` `AbilityTask` 生成 [`TargetData`](#concepts-targeting-data) 时暂停游戏，我建议不要真正暂停游戏，而是使用 `slomo 0`。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 5.9 One Button Interaction System
+[GASShooter](https://github.com/tranek/GASShooter) 实现了一个一键交互系统，玩家可以通过按下或按住 'E' 键与可交互对象进行交互，如复活玩家、打开武器箱以及开关滑动门。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+## 6. Debugging GAS
+在调试 GAS 相关问题时，你通常想知道以下信息：
+> * “我的属性值是多少？”
+> * “我有哪些 gameplay 标签？”
+> * “我当前有哪些 gameplay 效果？”
+> * “我被授予了哪些能力？哪些正在运行？哪些被阻止激活？”。
+
+GAS 提供了两种在运行时解答这些问题的技术 —— [`showdebug abilitysystem`](#debugging-sd) 和在 [`GameplayDebugger`](#debugging-gd) 中的钩子。
+
+**提示：** Unreal Engine 喜欢优化 C++ 代码，这使得调试某些函数变得困难。当你深入追踪代码时，这种情况很少发生。如果你将 Visual Studio 解决方案配置设置为 `DebugGame Editor` 仍然无法追踪代码或检查变量，你可以通过 `UE_DISABLE_OPTIMIZATION` 和 `UE_ENABLE_OPTIMIZATION` 宏或者 CoreMiscDefines.h 中定义的其他变体来禁用所有优化，从而包裹优化过的函数。除非你从源代码重新编译插件，否则不能在插件代码中使用这种方法。这可能对内联函数有效，也可能无效，具体取决于它们的功能和位置。调试完成后，请务必移除这些宏！
+
+```c++  
+UE_DISABLE_OPTIMIZATION  
+void MyClass::MyFunction(int32 MyIntParameter)  
+{  
+    // My code}  
+UE_ENABLE_OPTIMIZATION  
+```
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 6.1 showdebug abilitysystem
+在游戏内的控制台中输入 `showdebug abilitysystem`。此功能分为三个“页面”。这三个页面都会显示你当前拥有的所有 `GameplayTags`。在控制台中输入 `AbilitySystem.Debug.NextCategory` 来切换不同的页面。
+
+第一页显示了你所有 `Attributes` 的 `CurrentValue`：
+
+![First Page of showdebug abilitysystem](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/showdebugpage1.png)
+
+第二页显示了所有作用于你的 `Duration` 和 `Infinite` `GameplayEffects`，包括它们的层数、赋予的 `GameplayTags` 以及赋予的 `Modifiers`。
+
+![First Page of showdebug abilitysystem](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/showdebugpage2.png)
+
+第三页显示了所有已授予你的 `GameplayAbilities`，包括它们是否正在运行、是否被阻止激活，以及当前运行中的 `AbilityTasks` 的状态。
+
+![First Page of showdebug abilitysystem](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/showdebugpage3.png)
+
+要在目标间循环（目标由围绕 Actor 的绿色矩形棱柱表示），使用 `PageUp` 键或 `NextDebugTarget` 控制台命令前往下一个目标，使用 `PageDown` 键或 `PreviousDebugTarget` 控制台命令前往上一个目标。
+
+**注意：** 为了让能力系统信息根据当前选定的调试 Actor 更新，你需要在 `AbilitySystemGlobals` 中将 `bUseDebugTargetFromHud=true` 设置为如下，在 `DefaultGame.ini` 文件中：
+
+```  
+[/Script/GameplayAbilities.AbilitySystemGlobals]  
+bUseDebugTargetFromHud=true  
+```
+
+**注意：** 要使 `showdebug abilitysystem` 命令生效，必须在 GameMode 中选择一个实际的 HUD 类。否则，该命令将找不到，并返回 "Unknown Command"。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 6.2 Gameplay Debugger
+GAS 为 Gameplay Debugger 添加了功能。通过按 Apostrophe (') 键访问 Gameplay Debugger。通过在数字小键盘上按 3 来启用 Abilities 类别。类别可能会因你安装的插件而有所不同。如果你的键盘（例如笔记本电脑键盘）没有数字小键盘，那么你可以在项目设置中更改快捷键绑定。
+
+当你想查看 **其他** `Characters` 上的 `GameplayTags`、`GameplayEffects` 和 `GameplayAbilities` 时，可以使用 Gameplay Debugger。不幸的是，它不会显示目标 `Attributes` 的 `CurrentValue`。它会针对屏幕中心的任何 `Character`。你可以通过在编辑器的 World Outliner 中选择目标来更改目标，或者通过看向另一个 `Character` 并再次按 Apostrophe (') 键来更改。当前检查的 `Character` 在其上方有一个最大的红色圆圈。
+
+![Gameplay Debugger](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/gameplaydebugger.png)
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+**[⬆ Back to Top](#table-of-contents)**
 
 
 
