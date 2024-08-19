@@ -2172,3 +2172,119 @@ GAS 自带了使用 `Root Motion Sources` 集成到 `CharacterMovementComponent`
 **[⬆ Back to Top](#table-of-contents)**
 
 ### 4.8 Gameplay Cues
+
+#### 4.8.1 Gameplay Cue Definition
+`GameplayCues` (`GC`) 执行与游戏逻辑无关的操作，如音效、粒子效果、摄像头震动等。`GameplayCues` 通常会被复制（除非明确地本地 `Executed`、`Added` 或 `Removed`）并且可以被预测。
+
+我们通过将带有 **强制父名称 `GameplayCue.`** 的相应 `GameplayTag` 以及事件类型 (`Execute`、`Add` 或 `Remove`) 发送给 `ASC` 中的 `GameplayCueManager` 来触发 `GameplayCues`。`GameplayCueNotify` 对象和其他实现了 `IGameplayCueInterface` 的 `Actors` 可以根据 `GameplayCue` 的 `GameplayTag` (`GameplayCueTag`) 订阅这些事件。
+
+**注意：** 再次强调，`GameplayCue` `GameplayTags` 必须以父 `GameplayTag` `GameplayCue` 开头。例如，一个有效的 `GameplayCue` `GameplayTag` 可能是 `GameplayCue.A.B.C`。
+
+有两种类型的 `GameplayCueNotifies`，即 `Static` 和 `Actor`。它们响应不同的事件，不同类型的 `GameplayEffects` 可以触发它们。覆盖对应的事件来实现你的逻辑。
+
+| `GameplayCue` 类型                                                                                                                     | 事件               | `GameplayEffect` 类型     | 描述                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ---------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`GameplayCueNotify_Static`](https://docs.unrealengine.com/en-US/API/Plugins/GameplayAbilities/UGameplayCueNotify_Static/index.html) | `Execute`        | `Instant` 或 `Periodic`  | `Static` `GameplayCueNotifies` 在 `ClassDefaultObject` 上操作（意味着没有实例），非常适合一次性效果，如撞击效果。                                                                                                                                          |
+| [`GameplayCueNotify_Actor`](https://docs.unrealengine.com/en-US/BlueprintAPI/GameplayCueNotify/index.html)                           | `Add` 或 `Remove` | `Duration` 或 `Infinite` | `Actor` `GameplayCueNotifies` 在 `Added` 时会生成一个新的实例。因为这些是实例化的，所以它们可以在被 `Removed` 前执行动作。这些适用于循环播放的声音和粒子效果，当支持它们的 `Duration` 或 `Infinite` `GameplayEffect` 被移除或者手动调用移除时，这些效果也会被移除。这些还提供了选项来管理同时允许有多少个实例，以便多次应用相同的效果时只启动一次声音或粒子。 |
+
+`GameplayCueNotifies` 实际上可以响应任何事件，但通常我们会这样使用它们。
+
+**注意：** 使用 `GameplayCueNotify_Actor` 时，请检查 `Auto Destroy on Remove`，否则后续对同一个 `GameplayCueTag` 的 `Add` 调用将不起作用。
+
+当使用除了 `Full` 之外的 `ASC` [复制模式](#concepts-asc-rm) 时，`Add` 和 `Remove` `GC` 事件会在服务器玩家（监听服务器）上触发两次 —— 一次是在应用 `GE` 时，另一次是从 "Minimal" `NetMultiCast` 到客户端。但是，`WhileActive` 事件仍然只会触发一次。所有事件在客户端上都只会触发一次。
+
+示例项目包括了一个用于眩晕和冲刺效果的 `GameplayCueNotify_Actor`，还有一个用于 FireGun 的弹道撞击的 `GameplayCueNotify_Static`。这些 `GCs` 可以通过 [本地触发](#concepts-gc-local) 而不是通过 `GE` 复制来进一步优化。我在示例项目中选择了展示初学者级别的使用方式。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.8.2 Triggering Gameplay Cues
+在 `GameplayEffect` 成功应用时（未被标签或免疫阻止），填写所有应被触发的 `GameplayCues` 的 `GameplayTags`。
+
+![GameplayCue Triggered from a GameplayEffect](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/gcfromge.png)
+
+`UGameplayAbility` 提供了 Blueprint 节点来 `Execute`、`Add` 或 `Remove` `GameplayCues`。
+
+![GameplayCue Triggered from a GameplayAbility](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/gcfromga.png)
+
+在 C++ 中，你可以直接在 `ASC` 上调用函数（或在你的 `ASC` 子类中将其暴露给 Blueprint）：
+
+```c++  
+/** GameplayCues can also come on their own. These take an optional effect context to pass through hit result, etc */  
+void ExecuteGameplayCue(const FGameplayTag GameplayCueTag, FGameplayEffectContextHandle EffectContext = FGameplayEffectContextHandle());  
+void ExecuteGameplayCue(const FGameplayTag GameplayCueTag, const FGameplayCueParameters& GameplayCueParameters);  
+  
+/** Add a persistent gameplay cue */  
+void AddGameplayCue(const FGameplayTag GameplayCueTag, FGameplayEffectContextHandle EffectContext = FGameplayEffectContextHandle());  
+void AddGameplayCue(const FGameplayTag GameplayCueTag, const FGameplayCueParameters& GameplayCueParameters);  
+  
+/** Remove a persistent gameplay cue */  
+void RemoveGameplayCue(const FGameplayTag GameplayCueTag);  
+    /** Removes any GameplayCue added on its own, i.e. not as part of a GameplayEffect. */  
+void RemoveAllGameplayCues();  
+```
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.8.3 Local Gameplay Cues
+从 `GameplayAbilities` 和 `ASC` 触发 `GameplayCues` 的公开函数默认是复制的。每个 `GameplayCue` 事件都是多播 RPC。这可能会导致大量的 RPC。GAS 还限制了每个网络更新最多只能有两个相同的 `GameplayCue` RPC。我们可以通过使用本地 `GameplayCues` 来避免这个问题。本地 `GameplayCues` 只在单独的客户端上 `Execute`、`Add` 或 `Remove`。
+
+我们可以使用本地 `GameplayCues` 的场景：
+* 投射物撞击
+* 近战碰撞撞击
+* 从动画蒙太奇触发的 `GameplayCues`
+
+你应该在你的 `ASC` 子类中添加的本地 `GameplayCue` 函数：
+
+```c++  
+UFUNCTION(BlueprintCallable, Category = "GameplayCue", Meta = (AutoCreateRefTerm = "GameplayCueParameters", GameplayTagFilter = "GameplayCue"))  
+void ExecuteGameplayCueLocal(const FGameplayTag GameplayCueTag, const FGameplayCueParameters& GameplayCueParameters);  
+  
+UFUNCTION(BlueprintCallable, Category = "GameplayCue", Meta = (AutoCreateRefTerm = "GameplayCueParameters", GameplayTagFilter = "GameplayCue"))  
+void AddGameplayCueLocal(const FGameplayTag GameplayCueTag, const FGameplayCueParameters& GameplayCueParameters);  
+  
+UFUNCTION(BlueprintCallable, Category = "GameplayCue", Meta = (AutoCreateRefTerm = "GameplayCueParameters", GameplayTagFilter = "GameplayCue"))  
+void RemoveGameplayCueLocal(const FGameplayTag GameplayCueTag, const FGameplayCueParameters& GameplayCueParameters);  
+```  
+  
+```c++  
+void UPAAbilitySystemComponent::ExecuteGameplayCueLocal(const FGameplayTag GameplayCueTag, const FGameplayCueParameters & GameplayCueParameters)  
+{  
+    UAbilitySystemGlobals::Get().GetGameplayCueManager()->HandleGameplayCue(GetOwner(), GameplayCueTag, EGameplayCueEvent::Type::Executed, GameplayCueParameters);}  
+  
+void UPAAbilitySystemComponent::AddGameplayCueLocal(const FGameplayTag GameplayCueTag, const FGameplayCueParameters & GameplayCueParameters)  
+{  
+    UAbilitySystemGlobals::Get().GetGameplayCueManager()->HandleGameplayCue(GetOwner(), GameplayCueTag, EGameplayCueEvent::Type::OnActive, GameplayCueParameters);    UAbilitySystemGlobals::Get().GetGameplayCueManager()->HandleGameplayCue(GetOwner(), GameplayCueTag, EGameplayCueEvent::Type::WhileActive, GameplayCueParameters);}  
+  
+void UPAAbilitySystemComponent::RemoveGameplayCueLocal(const FGameplayTag GameplayCueTag, const FGameplayCueParameters & GameplayCueParameters)  
+{  
+    UAbilitySystemGlobals::Get().GetGameplayCueManager()->HandleGameplayCue(GetOwner(), GameplayCueTag, EGameplayCueEvent::Type::Removed, GameplayCueParameters);}  
+```
+
+如果一个 `GameplayCue` 是本地 `Added` 的，那么它应该被本地 `Removed`。如果它是通过复制 `Added` 的，那么它也应该通过复制来 `Removed`。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 4.8.4 Gameplay Cue Parameters
+`GameplayCues` 接收一个包含有关 `GameplayCue` 额外信息的 `FGameplayCueParameters` 结构作为参数。如果你从 `GameplayAbility` 或 `ASC` 上的手动函数触发 `GameplayCue`，则必须手动填充传递给 `GameplayCue` 的 `GameplayCueParameters` 结构。如果 `GameplayCue` 是由 `GameplayEffect` 触发的，则以下变量会自动填充到 `GameplayCueParameters` 结构中：
+
+* AggregatedSourceTags
+* AggregatedTargetTags
+* GameplayEffectLevel
+* AbilityLevel
+* [EffectContext](#concepts-ge-context)
+* Magnitude（如果 `GameplayEffect` 在 `GameplayCue` 标签容器上方的下拉列表中选择了一个用于 Magnitude 的 `Attribute` 并且有一个相应的 `Modifier` 影响该 `Attribute`）
+
+`GameplayCueParameters` 结构中的 `SourceObject` 变量可能是手动触发 `GameplayCue` 时传递任意数据到 `GameplayCue` 的好地方。
+
+**注意：** 参数结构中的一些变量，如 `Instigator`，可能已经存在于 `EffectContext` 中。`EffectContext` 还可以包含一个 `FHitResult` 以确定在世界中触发 `GameplayCue` 的位置。继承 `EffectContext` 可能是一种向 `GameplayCues` 传递更多数据的好方法，特别是那些由 `GameplayEffect` 触发的 `GameplayCues`。
+
+更多信息，请参见 [`UAbilitySystemGlobals`](#concepts-asg) 中填充 `GameplayCueParameters` 结构的 3 个函数。这些函数是虚函数，因此你可以重写它们来自动生成更多的信息。
+
+```c++  
+/** Initialize GameplayCue Parameters */  
+virtual void InitGameplayCueParameters(FGameplayCueParameters& CueParameters, const FGameplayEffectSpecForRPC &Spec);  
+virtual void InitGameplayCueParameters_GESpec(FGameplayCueParameters& CueParameters, const FGameplayEffectSpec &Spec);  
+virtual void InitGameplayCueParameters(FGameplayCueParameters& CueParameters, const FGameplayEffectContextHandle& EffectContext);  
+```
+
+**[⬆ Back to Top](#table-of-contents)**
