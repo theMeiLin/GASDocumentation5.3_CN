@@ -2859,9 +2859,348 @@ GAS 为 Gameplay Debugger 添加了功能。通过按 Apostrophe (') 键访问 G
 ![Gameplay Debugger](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/gameplaydebugger.png)
 
 
+**[⬆ Back to Top](#table-of-contents)**
+
+### 6.3 GAS Logging
+GAS 源代码包含许多不同详细程度的日志记录语句。你最有可能看到的是 `ABILITY_LOG()` 语句。默认的日志详细程度级别是 `Display`。更高级别的日志默认情况下不会在控制台中显示。
+
+要更改日志类别的详细程度级别，可以在控制台中输入：
+
+```  
+log [category] [verbosity]  
+```
+
+例如，要开启 `ABILITY_LOG()` 语句，你可以在控制台中输入：
+
+```  
+log LogAbilitySystem VeryVerbose  
+```
+
+要将其重置回默认值，请键入：
+
+```  
+log LogAbilitySystem Display  
+```
+
+要显示所有日志类别，请键入：
+
+```  
+log list  
+```
+
+值得注意的 GAS 相关日志类别：
+
+| 日志类别                  | 默认详细程度级别 |
+| ------------------------- | ----------------------- |
+| LogAbilitySystem          | Display                 |
+| LogAbilitySystemComponent | Log                     |
+| LogGameplayCueDetails     | Log                     |
+| LogGameplayCueTranslator  | Display                 |
+| LogGameplayEffectDetails  | Log                     |
+| LogGameplayEffects        | Display                 |
+| LogGameplayTags           | Log                     |
+| LogGameplayTasks          | Log                     |
+| VLogAbilitySystem         | Display                 |
+
+更多信息请参阅 [关于日志的 Wiki](https://unrealcommunity.wiki/logging-lgpidy6i)。
 
 **[⬆ Back to Top](#table-of-contents)**
 
+## 7. Optimizations
+
+### 7.1 Ability Batching
+能够在一帧内激活、可选地向服务器发送 `TargetData` 并结束的 [`GameplayAbilities`](#concepts-ga) 可以通过 [批处理来将两到三个 RPC 凝缩为一个 RPC](#concepts-ga-batching)。这类能力通常用于命中扫描枪械。
+
+### 7.2 Gameplay Cue Batching
+如果你同时发送多个 [`GameplayCues`](#concepts-gc)，考虑 [将它们批处理为一个 RPC](#concepts-gc-batching)。目的是减少 RPC 的数量（`GameplayCues` 是不可靠的 NetMulticast）并尽可能发送最少的数据。
+
+### 7.3 AbilitySystemComponent Replication Mode
+默认情况下，[`ASC`](#concepts-asc) 处于 [`Full Replication Mode`](#concepts-asc-rm)。这将把所有 [`GameplayEffects`](#concepts-ge) 复制给每个客户端（这对于单人游戏来说是可以接受的）。在多人游戏中，将玩家拥有的 `ASCs` 设置为 `Mixed Replication Mode`，并将 AI 控制的角色设置为 `Minimal Replication Mode`。这将使得应用在玩家角色上的 `GEs` 只复制给该角色的所有者，而应用在 AI 控制的角色上的 `GEs` 将永远不会向客户端复制 `GEs`。[`GameplayTags`](#concepts-gt) 仍将复制，而 [`GameplayCues`](#concepts-gc) 仍将以不可靠的 NetMulticast 方式发送给所有客户端，无论 `Replication Mode` 如何。这样可以减少不需要看到 `GEs` 的所有客户端上 `GEs` 的网络数据复制。
+
+### 7.4 Attribute Proxy Replication
+在像《堡垒之夜大逃杀》（Fortnite Battle Royale, FNBR）这样的大型多人游戏中，会有许多始终相关的 `PlayerStates` 上的 [`ASCs`](#concepts-asc) 复制大量的 [`Attributes`](#concepts-a)。为了优化这一瓶颈，《堡垒之夜》在 `PlayerState::ReplicateSubobjects()` 中完全禁用了 **模拟玩家控制代理** 上的 `ASC` 及其 [`AttributeSets`](#concepts-as) 的复制。自主代理和 AI 控制的 `Pawns` 仍然根据它们的 [`Replication Mode`](#concepts-asc-rm) 完全复制。而不是在始终相关的 `PlayerStates` 上的 `ASC` 上复制 `Attributes`，FNBR 在玩家的 `Pawn` 上使用了一个复制代理结构。当服务器上的 `ASC` 上的 `Attributes` 发生变化时，这些变化也会反映在代理结构上。客户端从代理结构接收复制的 `Attributes` 并将这些变化推送到本地的 `ASC`。这使得 `Attribute` 的复制能够利用 `Pawn` 的相关性和 `NetUpdateFrequency`。这个代理结构还复制了一个经过白名单过滤的小型 `GameplayTags` 集合，使用位掩码进行存储。这种优化减少了网络上的数据量，并允许我们利用 `Pawn` 的相关性。AI 控制的 `Pawns` 已经在其 `Pawn` 上具有 `ASC`，并且已经利用了其相关性，因此这种优化对它们来说不是必需的。
+
+> 我不确定现在是否仍然有必要这样做，因为自那以后已经进行了其他服务器端优化（如 Replication Graph 等），而且这不是最易于维护的模式。
+
+*Epic 的 Dave Ratti 对 [社区问题 #3](https://epicgames.ent.box.com/s/m1egifkxv3he3u3xezb9hzbgroxyhx89) 的回答*
+
+### 7.5 ASC Lazy Loading
+《堡垒之夜大逃杀》（FNBR）中有大量可被破坏的 `AActors`（树木、建筑物等），每个都有一个 [`ASC`](#concepts-asc)。这会在内存成本上累积。FNBR 通过仅在需要时（即首次被玩家破坏时）懒加载 `ASCs` 来优化这一点。这减少了总体内存使用量，因为有些 `AActors` 在一场比赛中可能永远不会受到损害。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+## 8. Quality of Life Suggestions
+
+### 8.1 Gameplay Effect Containers
+[GameplayEffectContainers](#concepts-ge-containers) 将 [`GameplayEffectSpecs`](#concepts-ge-spec)、[`TargetData`](#concepts-targeting-data)、[简单的目标定位](#concepts-targeting-containers) 及相关功能组合成易于使用的结构。这些结构非常适合将 `GameplayEffectSpecs` 传递给从能力中生成的弹体，这些弹体随后会在碰撞时应用效果。
+
+### 8.2 Blueprint AsyncTasks to Bind to ASC Delegates
+为了提高设计友好性的迭代时间，特别是在设计 UMG Widgets 用于 UI 时，可以创建 Blueprint AsyncTasks（用 C++ 编写），直接从你的 UMG Blueprint 图表绑定到 `ASC` 上的常用变更委托。唯一的限制是它们必须手动销毁（例如，在小部件被销毁时），否则它们将永远驻留在内存中。示例项目包含了三个 Blueprint AsyncTasks。
+
+监听 `Attribute` 的变化：
+
+![Listen for Attributes Changes BP Node](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/attributeschange.png)
+
+监听冷却时间的变化：
+
+![Listen for Cooldown Change BP Node](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/cooldownchange.png)
+
+`GE` 堆栈的列表更改：
+
+![Listen for GameplayEffect Stack Change BP Node](https://raw.githubusercontent.com/theMeiLin/GASDocumentation5.3_CN/main/Images/gestackchange.png)
+
+**[⬆ Back to Top](#table-of-contents)**
+
+## 9. Troubleshooting
+
+### 9.1 `LogAbilitySystem: Warning: Can't activate LocalOnly or LocalPredicted ability %s when not local!`
+你需要在客户端 [初始化 `ASC`](#concepts-asc-setup)。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 9.2 `ScriptStructCache` errors
+你需要调用 [`UAbilitySystemGlobals::InitGlobalData()`](#concepts-asg-initglobaldata)。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 9.3 Animation Montages are not replicating to clients
+确保在你的 [GameplayAbilities](#concepts-ga) 中使用 `PlayMontageAndWait` Blueprint 节点而不是 `PlayMontage`。这个 [AbilityTask](#concepts-at) 会自动通过 `ASC` 复制动画序列，而 `PlayMontage` 节点则不会。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 9.4 Duplicating Blueprint Actors is setting AttributeSets to nullptr
+Unreal Engine 中存在一个 [bug](https://issues.unrealengine.com/issue/UE-81109)，它会导致从现有 Blueprint Actor 类复制得到的 Blueprint Actor 类中的 `AttributeSet` 指针被设置为 nullptr。这个问题有几个解决方法。我成功地避免在我的类中创建自定义的 `AttributeSet` 指针（不在 .h 文件中声明指针，不在构造函数中调用 `CreateDefaultSubobject`），而是直接在 `PostInitializeComponents()` 中将 `AttributeSets` 添加到 `ASC`（示例项目中未展示）。复制的 `AttributeSets` 仍然会存在于 `ASC` 的 `SpawnedAttributes` 数组中。实现方式大致如下：
+
+```c++  
+void AGDPlayerState::PostInitializeComponents()  
+{  
+    Super::PostInitializeComponents();  
+    if (AbilitySystemComponent)    
+    {       
+    AbilitySystemComponent->AddSet<UGDAttributeSetBase>();       
+    // ... any other AttributeSets that you may have    
+    }
+}  
+```
+
+在这种情况下，你应该使用 `ASC` 上的函数来读取和设置 `AttributeSet` 中的值，而不是 [通过宏生成的函数来调用 `AttributeSet` 上的方法](#concepts-as-attributes)。
+
+```c++  
+/** Returns current (final) value of an attribute */  
+float GetNumericAttribute(const FGameplayAttribute &Attribute) const;  
+  
+/** Sets the base value of an attribute. Existing active modifiers are NOT cleared and will act upon the new base value. */  
+void SetNumericAttributeBase(const FGameplayAttribute &Attribute, float NewBaseValue);  
+```
+
+那么 `GetHealth()` 方法可能会是这样的：
+
+```c++  
+float AGDPlayerState::GetHealth() const  
+{  
+    if (AbilitySystemComponent)    
+    {
+	    return AbilitySystemComponent->GetNumericAttribute(UGDAttributeSetBase::GetHealthAttribute());    
+    }  
+	return 0.0f;
+}  
+```
+
+设置（初始化）健康值 `Attribute` 可能看起来像这样：
+
+```c++  
+const float NewHealth = 100.0f;  
+if (AbilitySystemComponent)  
+{  
+    AbilitySystemComponent->SetNumericAttributeBase(UGDAttributeSetBase::GetHealthAttribute(), NewHealth);
+}  
+```
+
+作为提醒，`ASC` 期望每种 `AttributeSet` 类最多只有一个 `AttributeSet` 对象。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 9.5 unresolved external symbol UEPushModelPrivate::MarkPropertyDirty(int,int)
+如果收到类似以下内容的编译器错误：
+
+```  
+error LNK2019: unresolved external symbol "__declspec(dllimport) void __cdecl UEPushModelPrivate::MarkPropertyDirty(int,int)" (__imp_?MarkPropertyDirty@UEPushModelPrivate@@YAXHH@Z) referenced in function "public: void __cdecl FFastArraySerializer::IncrementArrayReplicationKey(void)" (?IncrementArrayReplicationKey@FFastArraySerializer@@QEAAXXZ)  
+```
+
+这是尝试在 `FFastArraySerializer` 上调用 `MarkItemDirty()` 时出现的问题。我在更新 `ActiveGameplayEffect` 时遇到了这个问题，比如更新冷却时间的持续时间。
+
+```c++  
+ActiveGameplayEffects.MarkItemDirty(*AGE);  
+```
+
+发生的情况是 `WITH_PUSH_MODEL` 在多个地方被定义。`PushModelMacros.h` 将其定义为 0，而在多个其他地方将其定义为 1。`PushModel.h` 将其视为 1，但 `PushModel.cpp` 将其视为 0。
+
+解决方案是在项目的 `Build.cs` 文件中的 `PublicDependencyModuleNames` 添加 `NetCore`。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+### 9.6 Enum names are now represented by path name
+如果您收到类似以下内容的编译器警告：
+
+```  
+warning C4996: 'FGameplayAbilityInputBinds::FGameplayAbilityInputBinds': Enum names are now represented by path names. Please use a version of FGameplayAbilityInputBinds constructor that accepts FTopLevelAssetPath. Please update your code to the new API before upgrading to the next release, otherwise your project will no longer compile.  
+```
+
+Unreal Engine 5.1 已弃用在 `BindAbilityActivationToInputComponent()` 构造函数中使用 `FString`。相反，我们必须传入一个 `FTopLevelAssetPath`。
+
+旧的、已弃用的方式：
+
+```c++  
+AbilitySystemComponent->BindAbilityActivationToInputComponent(InputComponent, FGameplayAbilityInputBinds(FString("ConfirmTarget"),  
+    FString("CancelTarget"), FString("EGDAbilityInputID"), static_cast<int32>(EGDAbilityInputID::Confirm), static_cast<int32>(EGDAbilityInputID::Cancel)));  
+```
+
+新方式：
+
+```c++  
+FTopLevelAssetPath AbilityEnumAssetPath = FTopLevelAssetPath(FName("/Script/GASDocumentation"), FName("EGDAbilityInputID"));  
+AbilitySystemComponent->BindAbilityActivationToInputComponent(InputComponent, FGameplayAbilityInputBinds(FString("ConfirmTarget"),  
+    FString("CancelTarget"), AbilityEnumAssetPath, static_cast<int32>(EGDAbilityInputID::Confirm), static_cast<int32>(EGDAbilityInputID::Cancel)));  
+```
+
+更多信息，请参阅 `Engine\Source\Runtime\CoreUObject\Public\UObject\TopLevelAssetPath.h`。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+## 10. Common GAS Acronyms
+
+| 名称                                                                                                   | 缩写            |
+|------------------------------------------------------------------------------------------------------- | ------------------- |
+| AbilitySystemComponent                                                                                 | ASC                 |
+| AbilityTask                                                                                            | AT                  |
+| [Epic 的 Action RPG 示例项目](https://www.unrealengine.com/marketplace/en-US/product/action-rpg)      | ARPG, ARPG Sample   |
+| CharacterMovementComponent                                                                             | CMC                 |
+| GameplayAbility                                                                                        | GA                  |
+| GameplayAbilitySystem                                                                                  | GAS                 |
+| GameplayCue                                                                                            | GC                  |
+| GameplayEffect                                                                                         | GE                  |
+| GameplayEffectExecutionCalculation                                                                     | ExecCalc, Execution |
+| GameplayTag                                                                                            | Tag, GT             |
+| ModifierMagnitudeCalculation                                                                           | ModMagCalc, MMC     |
+
+**[⬆ Back to Top](#table-of-contents)**
+
+## 11. Other Resources
+* [官方文档](https://docs.unrealengine.com/en-US/Gameplay/GameplayAbilitySystem/index.html)
+* 源代码！
+   * 特别是 `GameplayPrediction.h`
+* [Epic 的 Lyra 示例项目](https://unrealengine.com/marketplace/en-US/learn/lyra)
+* [Epic 的 Action RPG 示例项目](https://www.unrealengine.com/marketplace/en-US/product/action-rpg)
+* [Unreal Slackers Discord](https://unrealslackers.org/) 有一个专门讨论 GAS 的文字频道 `#gameplay-ability-system`
+   * 查看置顶消息
+* [Dan 'Pan' 的 GitHub 资源库](https://github.com/Pantong51/GASContent)
+* [SabreDartStudios 的 YouTube 视频](https://www.youtube.com/channel/UCCFUhQ6xQyjXDZ_d6X_H_-A)
+
+### 11.1 Q&A With Epic Game's Dave Ratti
+[Dave Ratti 回应了 Unreal Slackers Discord Server 社区关于 GAS 的问题](https://epicgames.ent.box.com/s/m1egifkxv3he3u3xezb9hzbgroxyhx89):
+
+我们列出了八个问题：
+1. 我们如何根据需要在 GameplayAbilities 之外或与 GameplayAbilities 无关的情况下创建范围预测窗口？例如，当一个发射后不管的射弹击中敌人时，如何在本地预测 GameplayEffect 造成的伤害？
+
+PredictionKey 系统实际上并不是为此而设计的。从根本上讲，该系统的工作原理是客户端启动预测操作，使用密钥将其告知服务器，然后客户端和服务器都运行相同的操作并将预测副作用与给定的预测密钥相关联。例如，“我正在预测性地激活一项能力”或“我已经生成了目标数据，并将在 WaitTargetData 任务之后预测性地运行能力图的一部分”。
+
+使用这种模式，PredictionKey 从服务器“反弹”并通过 UAbilitySystemComponent::ReplicatedPredictionKeyMap（复制属性）返回到客户端。一旦密钥从服务器复制回来，客户端就可以撤消所有本地预测副作用（GameplayCues、GameplayEffects）：复制的版本*将存在*，如果不存在，则为错误预测。准确知道​​何时撤消预测副作用在这里至关重要：如果太早，您会看到间隙，如果太晚，您将得到“双重”。 （请注意，这是指状态预测，例如基于持续时间的游戏效果的循环 GameplayCue。“突发”GameplayCues 和即时游戏效果永远不会“撤消”或回滚。如果与它们关联的预测密钥，它们只会在客户端上被跳过）。
+
+为了进一步说明这一点：至关重要的是，预测操作是服务器不会自行执行的操作，而只有在客户端告诉它们时才会执行。因此，除非“某事”是服务器在客户端通知后才会执行的操作，否则通用的“按需创建密钥并告知服务器以便我可以运行某事”是行不通的。
+
+回到最初的问题：类似于发射后就不管的射弹。Paragon 和 Fornite 都有使用 GameplayCues 的射弹演员类。但是，我们不使用预测密钥系统来执行这些操作。相反，我们有一个关于非复制 GameplayCues 的概念。GameplayCues 只是在本地触发并被服务器完全跳过。本质上，所有这些都是直接调用 UGameplayCueManager::HandleGameplayCue。它们不通过 UAbilitySystemComponent 路由，因此不会进行预测密钥检查/早期返回。
+
+非复制 GameplayCues 的缺点是，它们不会被复制。因此，这取决于射弹类/蓝图，以确保调用这些函数的代码路径在每个人身上都运行。我们有启动提示（在 BeginPlay 中调用）、爆炸、击中墙壁/角色等。
+
+这些类型的事件已经在客户端生成，因此调用非复制的游戏提示并不是什么大问题。复杂的蓝图可能很棘手，作者需要确保他们了解在哪里运行什么。
+
+2. 当使用 WaitNetSync AbilityTask 和 OnlyServerWait 在本地预测的 GameplayAbility 中创建范围预测窗口时，由于服务器正在等待带有预测密钥的 RPC，玩家是否可以通过延迟向服务器发送数据包来控制 GameplayAbility 时间，从而进行作弊？这在 Paragon 或 Fortnite 中是否曾出现过问题？如果是，Epic 做了什么来解决这个问题？
+
+是的，这是一个合理的担忧。在服务器上运行的任何等待客户端“信号”的能力蓝图都可能容易受到延迟切换类型漏洞的攻击。
+
+Paragon 有一个类似于 UAbilityTask_WaitTargetData 的自定义定位任务。在这个任务中，我们有超时或“最大延迟”，我们会在客户端等待即时定位模式。如果定位模式正在等待用户确认（按下按钮），那么它将被忽略，因为用户可以慢慢来。但是对于即时确认目标的技能，我们只会等待一段时间，然后 A) 在服务器端生成目标数据 B) 取消该技能。
+
+我们从未有过 WaitNetSync 这样的机制，我们很少使用。
+
+不过，我认为 Fortnite 不会使用任何类似的东西。Fortnite 中的武器技能是特殊情况，批量处理到单个 Fortnite 特定的 RPC：一个 RPC 用于激活技能、提供目标数据和结束技能。因此，在 Battle Royale 中，武器技能本质上不会受到此影响。
+
+我的看法是，这可能是可以在整个系统范围内解决的问题，但我认为我们不会很快做出改变。针对您提到的情况，对 WaitNetSync 进行局部修复以包含最大延迟可能是一项合理的任务，但同样，我们不太可能在不久的将来在我们这边做到这一点。
+
+3. Paragon 和 Fortnite 使用了哪种 EGameplayEffectReplicationMode，Epic 对何时使用它们有什么建议？
+
+这两款游戏基本上都对玩家控制的角色使用混合模式，对 AI 控制的角色（AI 小兵、丛林小兵、AI Husk 等）使用最小模式。这是我建议大多数人在多人游戏中使用该系统的方式。越早设置这些，越好。
+
+Fortnite 在优化方面更进一步。它实际上根本不为模拟代理复制 UAbilitySystemComponent。在拥有 Fortnite 玩家状态类的 ::ReplicateSubobjects() 中跳过组件和属性子对象。我们确实将能力系统组件中的最低限度复制数据推送到 pawn 本身的结构（基本上是属性值的子集和我们在位掩码中复制的标签白名单子集）。我们称之为“代理”。在接收端，我们获取在 pawn 上复制的代理数据，并将其推回到玩家状态的能力系统组件中。因此，FNBR 中确实为每个玩家提供了一个 ASC，但它并不直接复制：而是通过 pawn 上的最小代理结构复制数据，然后路由回接收端的 ASC。这是有优势的，因为它 A) 是一组更简单的数据 B) 利用了 pawn 相关性。
+
+我不确定自那时以来已经完成的其他服务器端优化（复制图等）是否仍然有必要，而且它不是最易于维护的模式。
+
+4. 由于我们无法根据 GameplayPrediction.h 预测 GameplayEffects 的移除，是否有任何策略可以减轻延迟对移除 GameplayEffects 的影响？例如，当移除移动速度慢的元素时，我们目前必须等待服务器复制 GameplayEffect 移除，从而导致玩家角色位置的突然变化。
+
+这是一个棘手的问题，我没有好的答案。我们通常通过容差和平滑来绕过这些问题。我完全同意能力系统和与角色移动系统的精确同步并不好，我们确实想修复它。
+
+我有一个允许预测移除 GE 的架子，但在继续前进之前永远无法解决所有边缘情况。但这并不能解决所有问题，因为角色移动仍然有一个内部保存的移动缓冲区，它对能力系统和可能的移动速度修改器等一无所知。即使无法预测 GE 的移除，仍然有可能进入校正反馈循环。
+
+如果你认为你的情况确实很危急，你可以预测性地添加一个 GE，这会抑制你的移动速度 GE。我自己从来没有这样做过，但之前曾对此进行过理论研究。它可能能够帮助解决某一类问题。
+
+5. 我们知道，AbilitySystemComponent 存在于 Paragon 和 Fortnite 中的 PlayerState 上，以及 Action RPG Sample 中的角色上。Epic 对于 AbilitySystemComponent 应该存在于何处的内部规则、指南或建议是什么——它的所有者应该是谁？
+
+一般来说，我认为任何不需要重生的东西都应该有相同的所有者和 Avatar 角色。任何东西，如 AI 敌人、建筑物、世界道具等。
+
+任何重生的东西都应该有不同的所有者和 Avatar，这样 Ability 系统组件就不需要在重生后保存/重新创建/恢复。
+
+PlayerState 是合乎逻辑的选择，它会复制到所有客户端（而 PlayerController 则不是）。
+
+缺点是 PlayerState 总是相关的，所以你可能会在 100 个玩家的游戏中遇到问题。（请参阅问题 #3 中 FN 所做的事情的注释）。
+
+6. 是否有可能让多个 AbilitySystemComponents 拥有相同的所有者但拥有不同的化身（例如，在 pawn 和武器/物品/射弹上，所有者设置为 PlayerState）？
+
+我看到的第一个问题是在拥有者 Actor 上实现 IGameplayTagAssetInterface 和 IAbilitySystemInterface。前者可能是可行的：只需聚合所有 ASC 中的标签（但要注意 - HasAlMatchingGameplayTags 只能通过跨 ASC 聚合来满足。仅仅将该调用转发给每个 ASC 并将结果一起进行 OR 是不够的）。但后者更加棘手：哪个 ASC 是权威的？如果有人想应用 GE - 哪一个应该接收它？也许你可以解决这些问题，但问题的这一方面将是最困难的：所有者将在其下拥有多个 ASC。
+
+不过，将棋子和武器上的 ASC 分开是有意义的。例如，区分描述武器的标签和描述拥有棋子的标签。也许赋予武器的标签也“适用于”所有者，而不适用于其他任何东西，这确实有意义（例如，属性和 GE 是独立的，但所有者将像我上面描述的那样汇总拥有的标签）。我相信这可以奏效。但拥有同一个所有者的多个 ASC 可能会变得很危险。
+
+7. 有没有办法阻止服务器覆盖拥有客户端上本地预测技能的冷却时间？在高延迟的情况下，当本地冷却时间到期但服务器上仍处于冷却状态时，这将允许拥有客户端“尝试”再次激活该技能。当拥有客户端的激活请求通过网络到达服务器时，服务器可能已冷却完毕，或者服务器可能能够将激活请求排队等待剩余的毫秒数。否则，延迟较高的客户端在重新激活技能之前会比延迟较低的客户端有更长的延迟。这在冷却时间非常短的技能（例如冷却时间可能不到一秒的基本攻击）中最为明显。如果没有办法阻止服务器覆盖本地预测技能的冷却时间，那么 Epic 减轻高延迟对重新激活技能的影响的策略是什么？换个例子来说，Epic 如何设计 Paragon 的基本攻击和其他能力，以便高延迟玩家能够以与低延迟玩家相同的速度通过本地预测进行攻击或激活？
+
+简而言之，没有办法阻止这种情况，Paragon 肯定存在问题。
+更高延迟的连接在基本攻击时 ROF 会更低。
+
+我试图通过添加“GE 协调”来解决这个问题，在计算 GE 持续时间时会考虑延迟。本质上允许服务器占用部分总 GE 时间，以便 GE 客户端的有效时间与任何延迟量 100% 一致（尽管波动仍然可能导致问题）。然而，我从来没有让它处于可以发货的状态，项目进展很快，我们从来没有完全解决这个问题。
+
+Fortnite 自己记录武器的射击率：它不使用 GE 来冷却武器。如果这对您的游戏来说是一个严重问题，我会推荐它。
+
+8. Epic 的 GameplayAbilitySystem 插件路线图是什么？
+Epic 计划在 2019 年及以后添加哪些功能？
+我们觉得目前系统总体上相当稳定，我们没有人负责开发主要的新功能。偶尔会针对 Fortnite 或
+UDN/pull 请求进行错误修复和小改进，但目前就是这样。
+从长远来看，我认为我们最终会推出“V2”或进行一些重大更改。我们从编写这个系统中学到了很多东西，觉得我们做对了很多，也做错了很多。我很想有机会纠正
+这些错误并改进上面指出的一些致命缺陷。
+如果 V2 真的要推出，提供升级路径将是至关重要的。我们永远不会制作 V2 并永远将 Fortnite 留在 V1 上：将有一些路径或程序会尽可能自动迁移，尽管几乎肯定仍需要手动重新制作。
+
+优先修复将是：
+● 与角色移动系统的更好互操作性。统一客户端预测。
+● GE 移除预测（问题 #4）
+● GE 延迟协调（问题 #8）
+● 通用网络优化，例如批处理 RPC 和代理结构。大部分是我们为 Fortnite 所做的工作，但找到了将其分解为更通用形式的方法，至少这样游戏就可以更轻松地编写自己的游戏特定优化。
+
+我会考虑进行更一般的重构类型的更改：
+● 我想从根本上摆脱让 GE 直接引用
+电子表格值的做法，相反，它们将能够发出参数，并且这些
+参数可以由与电子表格
+值绑定的某个更高级别的对象填充。当前模型的问题在于，由于 GE 与曲线表行紧密耦合，因此无法共享。我认为可以编写一个通用的参数化系统，并将其作为 V2 系统的基础。
+● 减少 UGameplayAbility 上的“策略”数量。我会删除 ReplicationPolicy
+InstancingPolicy。在我看来，Replication 几乎从未真正需要过，而且会造成
+混乱。应该通过将
+FGameplayAbilitySpec 设为可以子类化的 UObject 来替换 InstancingPolicy。这应该是具有事件且可蓝图化的
+“非实例化能力对象”。
+UGameplayAbility 应该是“每次执行时实例化”的对象。如果您需要实际实例化，它可以是可选的：相反，“非实例化”能力将通过新的 UGameplayAbilitySpec 对象实现。
+● 系统应提供更多“中级”构造，例如“过滤的 GE 应用程序容器”（数据驱动将哪些 GE 应用于具有更高级别游戏逻辑的哪些参与者）、“重叠体积支持”（根据碰撞原始重叠事件应用“过滤的 GE 应用程序容器”）等。这些是每个项目最终以自己的方式实现的构建块。正确处理它们并非易事，因此我认为我们应该更好地提供一些基本实现。
+● 总体而言，减少启动和运行项目所需的样板。可能是一个单独的模块“Ex 库”或任何可以提供开箱即用的被动能力或基本命中扫描武器之类的东西。此模块是可选的，但可以让你快速启动并运行。
+● 我想将 GameplayCues 移至与能力系统不耦合的单独模块。我认为这里可以做出很多改进。
+
+这只是我的个人意见，不代表任何人的承诺。我认为最现实的行动方案是，随着新引擎技术计划的实施，能力系统将需要更新，那时就是做这种事情的时候。这些计划可能与脚本、网络或物理/角色运动有关。不过，这一切都是长远考虑，所以我无法对时间表做出承诺或估计。
+
+**[⬆ Back to Top](#table-of-contents)**
+
+#### 11.1.2 Community Questions 2
 
 
 
