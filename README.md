@@ -299,7 +299,7 @@ GAS 的当前问题：
 
 **注意:** 如果`ASC`位于`PlayerState`上，则需要提高`PlayerState`的`NetUpdateFrequency`。它在`PlayerState`上的默认值非常低，这可能导致像`Attributes`（属性）和`GameplayTags`（游戏玩法标签）这样的变化在客户端发生延迟或感知到的滞后。一定要启用[`Adaptive Network Update Frequency`](https://docs.unrealengine.com/en-US/Gameplay/Networking/Actors/Properties/index.html#adaptivenetworkupdatefrequency)，《堡垒之夜》就使用了这一特性。
 >在你的PlayerState构造函数中调用NetUpdateFrequency。
->```
+>```c++
 >ALunaPlayerState::ALunaPlayerState()
 >{
 >	NetupdateFrequency = 100.f;
@@ -350,15 +350,15 @@ AGDPlayerState::AGDPlayerState()
 
 ```c++  
 void APACharacterBase::PossessedBy(AController * NewController)  
-{  
+{
     Super::PossessedBy(NewController);  
     if (AbilitySystemComponent)    
     {       
-	    AbilitySystemComponent->InitAbilityActorInfo(this, this);   
-	}  
-	
-	// ASC MixedMode 复制要求 ASC 所有者的所有者是控制器。
-	SetOwner(NewController);
+        AbilitySystemComponent->InitAbilityActorInfo(this, this);
+    }
+    
+    // ASC MixedMode 复制要求 ASC 所有者的所有者是控制器。
+    SetOwner(NewController);
 }  
 ```
 
@@ -368,9 +368,9 @@ void APAPlayerControllerBase::AcknowledgePossession(APawn* P)
     Super::AcknowledgePossession(P);  
     APACharacterBase* CharacterBase = Cast<APACharacterBase>(P);    
     if (CharacterBase)    
-    {       
-	    CharacterBase->GetAbilitySystemComponent()->InitAbilityActorInfo(CharacterBase, CharacterBase);   
-	} 
+    {
+        CharacterBase->GetAbilitySystemComponent()->InitAbilityActorInfo(CharacterBase, CharacterBase);
+    } 
 	 
     //...
 }  
@@ -385,12 +385,12 @@ void AGDHeroCharacter::PossessedBy(AController * NewController)
     Super::PossessedBy(NewController);  
     AGDPlayerState* PS = GetPlayerState<AGDPlayerState>();    
     if (PS)    
-    {       
-	    // 在服务器上设置 ASC。客户端在 OnRep_PlayerState（） 中执行此操作
-	    AbilitySystemComponent = Cast<UGDAbilitySystemComponent>(PS->GetAbilitySystemComponent());  
-       // AI 不会有 PlayerControllers，因此我们可以在此处再次初始化，以确保万无一失。 
-       // 对于具有 PlayerController 的英雄，启动两次没有坏处。      
-       PS->GetAbilitySystemComponent()->InitAbilityActorInfo(PS, this);    
+    {
+        // 在服务器上设置 ASC。客户端在 OnRep_PlayerState（） 中执行此操作
+        AbilitySystemComponent = Cast<UGDAbilitySystemComponent>(PS->GetAbilitySystemComponent());  
+        // AI 不会有 PlayerControllers，因此我们可以在此处再次初始化，以确保万无一失。 
+        // 对于具有 PlayerController 的英雄，启动两次没有坏处。      
+        PS->GetAbilitySystemComponent()->InitAbilityActorInfo(PS, this);    
     }  
           
     //...  
@@ -404,9 +404,9 @@ void AGDHeroCharacter::OnRep_PlayerState()
     Super::OnRep_PlayerState();  
     AGDPlayerState* PS = GetPlayerState<AGDPlayerState>();    
     if (PS)    
-    {       
-	    // 为客户端设置 ASC。服务器在 PossessedBy 中执行此操作。       
-	    AbilitySystemComponent = Cast<UGDAbilitySystemComponent>(PS->GetAbilitySystemComponent());
+    {
+        // 为客户端设置 ASC。服务器在 PossessedBy 中执行此操作。       
+        AbilitySystemComponent = Cast<UGDAbilitySystemComponent>(PS->GetAbilitySystemComponent());
 	      
         // 初始化客户端的 ASC Actor 信息。当服务器拥有新的 Actor 时，它将初始化其 ASC。 
         AbilitySystemComponent->InitAbilityActorInfo(PS, this);    
@@ -608,7 +608,12 @@ AbilitySystemComponent->ForceReplication();
 void AGSWeapon::PreReplication(IRepChangedPropertyTracker& ChangedPropertyTracker)  
 {  
     Super::PreReplication(ChangedPropertyTracker);  
-    DOREPLIFETIME_ACTIVE_OVERRIDE(AGSWeapon, PrimaryClipAmmo, (IsValid(AbilitySystemComponent) && !AbilitySystemComponent->HasMatchingGameplayTag(WeaponIsFiringTag)));    DOREPLIFETIME_ACTIVE_OVERRIDE(AGSWeapon, SecondaryClipAmmo, (IsValid(AbilitySystemComponent) && !AbilitySystemComponent->HasMatchingGameplayTag(WeaponIsFiringTag)));}  
+    DOREPLIFETIME_ACTIVE_OVERRIDE(AGSWeapon, 
+                                  PrimaryClipAmmo, 
+                                  (IsValid(AbilitySystemComponent) && !AbilitySystemComponent->HasMatchingGameplayTag(WeaponIsFiringTag))
+    );    
+    DOREPLIFETIME_ACTIVE_OVERRIDE(AGSWeapon, SecondaryClipAmmo, (IsValid(AbilitySystemComponent) && !AbilitySystemComponent->HasMatchingGameplayTag(WeaponIsFiringTag)));
+}  
 ```
 
 优点：
@@ -628,7 +633,12 @@ void AGSWeapon::PreReplication(IRepChangedPropertyTracker& ChangedPropertyTracke
 ```c++  
 void AGSWeapon::BeginPlay()  
 {  
-    if (!AttributeSet)    {       AttributeSet = NewObject<UGSWeaponAttributeSet>(this);    }    //...}  
+    if (!AttributeSet)    
+    {       
+        AttributeSet = NewObject<UGSWeaponAttributeSet>(this);    
+    }    
+    //...
+}  
 ```
 
 你可以通过查看这个 [旧版GASShooter](https://github.com/tranek/GASShooter/tree/df5949d0dd992bd3d76d4a728f370f2e2c827735) 来了解具体实现
@@ -810,7 +820,10 @@ UGameplayAbility 应该是“每次执行时实例化”的对象。如果您需
 ```c++  
 // Uses macros from AttributeSet.h  
 #define ATTRIBUTE_ACCESSORS(ClassName, PropertyName) \  
-    GAMEPLAYATTRIBUTE_PROPERTY_GETTER(ClassName, PropertyName) \    GAMEPLAYATTRIBUTE_VALUE_GETTER(PropertyName) \    GAMEPLAYATTRIBUTE_VALUE_SETTER(PropertyName) \    GAMEPLAYATTRIBUTE_VALUE_INITTER(PropertyName)  
+    GAMEPLAYATTRIBUTE_PROPERTY_GETTER(ClassName, PropertyName) \    
+    GAMEPLAYATTRIBUTE_VALUE_GETTER(PropertyName) \    
+    GAMEPLAYATTRIBUTE_VALUE_SETTER(PropertyName) \    
+    GAMEPLAYATTRIBUTE_VALUE_INITTER(PropertyName)  
 ```
 
 一个复制的健康属性可以像下面这样定义：
@@ -833,7 +846,8 @@ virtual void OnRep_Health(const FGameplayAttributeData& OldHealth);
 ```c++  
 void UGDAttributeSetBase::OnRep_Health(const FGameplayAttributeData& OldHealth)  
 {  
-    GAMEPLAYATTRIBUTE_REPNOTIFY(UGDAttributeSetBase, Health, OldHealth);}  
+    GAMEPLAYATTRIBUTE_REPNOTIFY(UGDAttributeSetBase, Health, OldHealth);
+}  
 ```
 
 最后，需要将 `Attribute` 添加到 `GetLifetimeReplicatedProps`：
@@ -842,7 +856,8 @@ void UGDAttributeSetBase::OnRep_Health(const FGameplayAttributeData& OldHealth)
 void UGDAttributeSetBase::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const  
 {  
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);  
-    DOREPLIFETIME_CONDITION_NOTIFY(UGDAttributeSetBase, Health, COND_None, REPNOTIFY_Always);}  
+    DOREPLIFETIME_CONDITION_NOTIFY(UGDAttributeSetBase, Health, COND_None, REPNOTIFY_Always);
+}  
 ```
 
 
@@ -879,7 +894,8 @@ AttributeSet->InitHealth(100.0f);
 if (Attribute == GetMoveSpeedAttribute())  
 {  
     // 减速不能少于 150 个单位，也不能加速超过 1000 个单位    
-    NewValue = FMath::Clamp<float>(NewValue, 150, 1000);}  
+    NewValue = FMath::Clamp<float>(NewValue, 150, 1000);
+}  
 ```
 
 `GetMoveSpeedAttribute()` 函数是由我们添加到 `AttributeSet.h` 中的宏块创建的（[定义属性](#concepts-as-attributes)）。
@@ -916,8 +932,16 @@ virtual void OnAttributeAggregatorCreated(const FGameplayAttribute& Attribute, F
 void UGSAttributeSetBase::OnAttributeAggregatorCreated(const FGameplayAttribute& Attribute, FAggregator* NewAggregator) const  
 {  
     Super::OnAttributeAggregatorCreated(Attribute, NewAggregator);  
-    if (!NewAggregator)    {       return;    }  
-    if (Attribute == GetMoveSpeedAttribute())    {       NewAggregator->EvaluationMetaData = &FAggregatorEvaluateMetaDataLibrary::MostNegativeMod_AllPositiveMods;    }}  
+    if (!NewAggregator)    
+    {       
+        return;    
+    }  
+    
+    if (Attribute == GetMoveSpeedAttribute())    
+    {       
+        NewAggregator->EvaluationMetaData = &FAggregatorEvaluateMetaDataLibrary::MostNegativeMod_AllPositiveMods;    
+    }
+}  
 ```
 
 你应该将自定义的 `AggregatorEvaluateMetaData` 作为静态变量添加到 `FAggregatorEvaluateMetaDataLibrary` 中。
@@ -1039,15 +1063,43 @@ virtual void OnRemoveGameplayEffectCallback(const FActiveGameplayEffect& EffectR
 ```c++  
 float FAggregatorModChannel::EvaluateWithBase(float InlineBaseValue, const FAggregatorEvaluateParameters& Parameters) const  
 {  
-    ...    float Additive = SumMods(Mods[EGameplayModOp::Additive], GameplayEffectUtilities::GetModifierBiasByModifierOp(EGameplayModOp::Additive), Parameters);    float Multiplicitive = SumMods(Mods[EGameplayModOp::Multiplicitive], GameplayEffectUtilities::GetModifierBiasByModifierOp(EGameplayModOp::Multiplicitive), Parameters);    float Division = SumMods(Mods[EGameplayModOp::Division], GameplayEffectUtilities::GetModifierBiasByModifierOp(EGameplayModOp::Division), Parameters);    ...    return ((InlineBaseValue + Additive) * Multiplicitive) / Division;    ...}  
+    ...    
+    float Additive = SumMods(Mods[EGameplayModOp::Additive], 
+                             GameplayEffectUtilities::GetModifierBiasByModifierOp(EGameplayModOp::Additive), 
+                             Parameter
+    );
+        
+    float Multiplicitive = SumMods(Mods[EGameplayModOp::Multiplicitive], 
+                                   GameplayEffectUtilities::GetModifierBiasByModifierOp(EGameplayModOp::Multiplicitive), 
+                                   Parameters
+    );    
+    float Division = SumMods(Mods[EGameplayModOp::Division], 
+                             GameplayEffectUtilities::GetModifierBiasByModifierOp(EGameplayModOp::Division), 
+                             Parameters
+    ); 
+       
+    ...   
+     
+    return ((InlineBaseValue + Additive) * Multiplicitive) / Division; 
+       
+    ...
+}  
 ```  
   
 ```c++  
 float FAggregatorModChannel::SumMods(const TArray<FAggregatorMod>& InMods, float Bias, const FAggregatorEvaluateParameters& Parameters)  
 {  
     float Sum = Bias;  
-    for (const FAggregatorMod& Mod : InMods)    {       if (Mod.Qualifies())       {          Sum += (Mod.EvaluatedMagnitude - Bias);       }    }  
-    return Sum;}  
+    for (const FAggregatorMod& Mod : InMods)    
+    {       
+        if (Mod.Qualifies())       
+        {          
+            Sum += (Mod.EvaluatedMagnitude - Bias);       
+        }    
+    }  
+    
+    return Sum;
+}  
 ```
 
 这个公式会导致一些意外的结果。首先，这个公式在将所有 `Modifiers` 乘入或除入 `BaseValue` 之前，会先将它们加在一起。大多数人会期望这些 `Modifiers` 相乘或相除。例如，如果有两个 `Multiply` 类型的 `Modifiers` 其值为 `1.5`，大多数人会期望 `BaseValue` 被乘以 `1.5 x 1.5 = 2.25`。相反，这个公式将 `1.5` 加在一起，将 `BaseValue` 乘以 `2`（`50% 增加 + 另一个 50% 增加 = 100% 增加`）。这是来自 `GameplayPrediction.h` 的例子：对 `500` 的基础速度施加 `10%` 的加速效果将是 `550`。再施加另一个 `10%` 的加速效果，速度将是 `600`。
@@ -1079,16 +1131,31 @@ Multiplier: `5, 5`
 ```c++  
 float FAggregatorModChannel::EvaluateWithBase(float InlineBaseValue, const FAggregatorEvaluateParameters& Parameters) const  
 {  
-    ...    float Multiplicitive = MultiplyMods(Mods[EGameplayModOp::Multiplicitive], Parameters);    float Division = MultiplyMods(Mods[EGameplayModOp::Division], Parameters);    ...  
-    return ((InlineBaseValue + Additive) * Multiplicitive) / Division;}  
+    ...    
+    float Multiplicitive = MultiplyMods(Mods[EGameplayModOp::Multiplicitive], Parameters);    
+    float Division = MultiplyMods(Mods[EGameplayModOp::Division], Parameters); 
+       
+    ...  
+    
+    return ((InlineBaseValue + Additive) * Multiplicitive) / Division;
+}  
 ```  
   
 ```c++  
-float FAggregatorModChannel::MultiplyMods(const TArray<FAggregatorMod>& InMods, const FAggregatorEvaluateParameters& Parameters)  
+float FAggregatorModChannel::MultiplyMods(const TArray<FAggregatorMod>& InMods, 
+                                          const FAggregatorEvaluateParameters& Parameters)  
 {  
     float Multiplier = 1.0f;  
-    for (const FAggregatorMod& Mod : InMods)    {       if (Mod.Qualifies())       {          Multiplier *= Mod.EvaluatedMagnitude;       }    }  
-    return Multiplier;}  
+    for (const FAggregatorMod& Mod : InMods)    
+    {       
+        if (Mod.Qualifies())       
+        {          
+            Multiplier *= Mod.EvaluatedMagnitude;       
+        }    
+    }  
+    
+    return Multiplier;
+}  
 ```
 
 **[⬆ 回到顶部](#目录)**
@@ -1255,9 +1322,9 @@ UPAMMC_PoisonMana::UPAMMC_PoisonMana()
 {  
   
     //ManaDef defined in header FGameplayEffectAttributeCaptureDefinition ManaDef; 
-	ManaDef.AttributeToCapture = UPAAttributeSetBase::GetManaAttribute();
-	ManaDef.AttributeSource = EGameplayEffectAttributeCaptureSource::Target;
-	ManaDef.bSnapshot = false;  
+    ManaDef.AttributeToCapture = UPAAttributeSetBase::GetManaAttribute();
+    ManaDef.AttributeSource = EGameplayEffectAttributeCaptureSource::Target;
+    ManaDef.bSnapshot = false;  
     //MaxManaDef defined in header FGameplayEffectAttributeCaptureDefinition MaxManaDef;    
     MaxManaDef.AttributeToCapture = UPAAttributeSetBase::GetMaxManaAttribute();
     MaxManaDef.AttributeSource = EGameplayEffectAttributeCaptureSource::Target;
@@ -1273,7 +1340,8 @@ float UPAMMC_PoisonMana::CalculateBaseMagnitude_Implementation(const FGameplayEf
     FAggregatorEvaluateParameters EvaluationParameters;
     EvaluationParameters.SourceTags = SourceTags;
     EvaluationParameters.TargetTags = TargetTags;
-    float Mana = 0.f;    GetCapturedAttributeMagnitude(ManaDef, Spec, EvaluationParameters, Mana);
+    float Mana = 0.f;    
+    GetCapturedAttributeMagnitude(ManaDef, Spec, EvaluationParameters, Mana);
     Mana = FMath::Max<float>(Mana, 0.0f);
     float MaxMana = 0.f;    
     GetCapturedAttributeMagnitude(MaxManaDef, Spec, EvaluationParameters, MaxMana);    
@@ -1281,14 +1349,15 @@ float UPAMMC_PoisonMana::CalculateBaseMagnitude_Implementation(const FGameplayEf
     float Reduction = -20.0f;    
     if (Mana / MaxMana > 0.5f)
     {
-	    // 如果目标的法力值超过一半，则效果加倍       
-	    Reduction *= 2;
-	}
-	if (TargetTags->HasTagExact(FGameplayTag::RequestGameplayTag(FName("Status.WeakToPoisonMana"))))  
+        // 如果目标的法力值超过一半，则效果加倍       
+        Reduction *= 2;
+    }
+    if (TargetTags->HasTagExact(FGameplayTag::RequestGameplayTag(FName("Status.WeakToPoisonMana"))))  
     {       
-	    // 如果目标对毒药法力的攻击较弱，效果加倍
-	    Reduction *= 2;
-    }        
+        // 如果目标对毒药法力的攻击较弱，效果加倍
+        Reduction *= 2;
+    }  
+          
     return Reduction;  
 }  
 ```
@@ -1415,8 +1484,13 @@ FGameplayEffectSpec* GetOwningSpecForPreExecuteMod() const;
 float UPGMMC_HeroAbilityCost::CalculateBaseMagnitude_Implementation(const FGameplayEffectSpec & Spec) const  
 {  
     const UPGGameplayAbility* Ability = Cast<UPGGameplayAbility>(Spec.GetContext().GetAbilityInstance_NotReplicated());  
-    if (!Ability)    {       return 0.0f;    }  
-    return Ability->Cost.GetValueAtLevel(Ability->GetAbilityLevel());}  
+    if (!Ability)    
+    {       
+        return 0.0f;    
+    } 
+     
+    return Ability->Cost.GetValueAtLevel(Ability->GetAbilityLevel());
+}  
 ```
 
 在这个示例中，成本值是我在 `GameplayAbility` 子类上添加的一个 `FScalableFloat`。
@@ -1464,10 +1538,11 @@ const FGameplayTagContainer * UPGGameplayAbility::GetCooldownTags() const
     const FGameplayTagContainer* ParentTags = Super::GetCooldownTags();
     if (ParentTags)
     {
-	    MutableTags->AppendTags(*ParentTags);
-	}
-	MutableTags->AppendTags(CooldownTags);
-	return MutableTags;
+        MutableTags->AppendTags(*ParentTags);
+    }
+    MutableTags->AppendTags(CooldownTags);
+    
+    return MutableTags;
 }  
 ```
 
@@ -1475,21 +1550,19 @@ const FGameplayTagContainer * UPGGameplayAbility::GetCooldownTags() const
 
 ```c++  
 void UPGGameplayAbility::ApplyCooldown(const FGameplayAbilitySpecHandle Handle,
-									   const FGameplayAbilityActorInfo * ActorInfo,
-									   const FGameplayAbilityActivationInfo ActivationInfo)
-									   const  
+                                       const FGameplayAbilityActorInfo * ActorInfo,
+                                       const FGameplayAbilityActivationInfo ActivationInfo) const  
 {
-	UGameplayEffect* CooldownGE = GetCooldownGameplayEffect();
-	if (CooldownGE)
-	{
-		FGameplayEffectSpecHandle SpecHandle = MakeOutgoingGameplayEffectSpec(CooldownGE->GetClass(), GetAbilityLevel());
-		SpecHandle.Data.Get()->DynamicGrantedTags.AppendTags(CooldownTags);
-		SpecHandle.Data.Get()->SetSetByCallerMagnitude(FGameplayTag::RequestGameplayTag(
-			FName(OurSetByCallerTag)),
-			CooldownDuration.GetValueAtLevel(GetAbilityLevel())
-		);
-		ApplyGameplayEffectSpecToOwner(Handle, ActorInfo, ActivationInfo, SpecHandle);
-	}
+    UGameplayEffect* CooldownGE = GetCooldownGameplayEffect();
+    if (CooldownGE)
+    {
+        FGameplayEffectSpecHandle SpecHandle = MakeOutgoingGameplayEffectSpec(CooldownGE->GetClass(), GetAbilityLevel());
+        SpecHandle.Data.Get()->DynamicGrantedTags.AppendTags(CooldownTags);
+        SpecHandle.Data.Get()->SetSetByCallerMagnitude(FGameplayTag::RequestGameplayTag(FName(OurSetByCallerTag)),
+                                                       CooldownDuration.GetValueAtLevel(GetAbilityLevel())
+        );
+        ApplyGameplayEffectSpecToOwner(Handle, ActorInfo, ActivationInfo, SpecHandle);
+    }
 }  
 ```
 
@@ -1517,15 +1590,16 @@ FGameplayTagContainer TempCooldownTags;
 ```c++  
 const FGameplayTagContainer * UPGGameplayAbility::GetCooldownTags() const  
 {
-	FGameplayTagContainer* MutableTags = const_cast<FGameplayTagContainer*>(&TempCooldownTags);
-	MutableTags->Reset();// MutableTags 写入 CDO 上的 TempCooldownTags，因此请在技能冷却标签更改（移动到不同的插槽）时清除它
-	const FGameplayTagContainer* ParentTags = Super::GetCooldownTags();
-	if (ParentTags)
-	{
-		MutableTags->AppendTags(*ParentTags);
-	}
-	MutableTags->AppendTags(CooldownTags);    
-	return MutableTags;
+    FGameplayTagContainer* MutableTags = const_cast<FGameplayTagContainer*>(&TempCooldownTags);
+    MutableTags->Reset();// MutableTags 写入 CDO 上的 TempCooldownTags，因此请在技能冷却标签更改（移动到不同的插槽）时清除它
+    const FGameplayTagContainer* ParentTags = Super::GetCooldownTags();
+    if (ParentTags)
+    {
+        MutableTags->AppendTags(*ParentTags);
+    }
+    MutableTags->AppendTags(CooldownTags);  
+      
+    return MutableTags;
 }  
 ```
 
@@ -1533,17 +1607,16 @@ const FGameplayTagContainer * UPGGameplayAbility::GetCooldownTags() const
 
 ```c++  
 void UPGGameplayAbility::ApplyCooldown(const FGameplayAbilitySpecHandle Handle,
-									   const FGameplayAbilityActorInfo * ActorInfo,
-									   const FGameplayAbilityActivationInfo ActivationInfo)
-									   const  
+                                       const FGameplayAbilityActorInfo * ActorInfo,
+                                       const FGameplayAbilityActivationInfo ActivationInfo) const  
 {  
-	UGameplayEffect* CooldownGE = GetCooldownGameplayEffect();
-	if (CooldownGE)
+    UGameplayEffect* CooldownGE = GetCooldownGameplayEffect();
+    if (CooldownGE)
 	{
-		FGameplayEffectSpecHandle SpecHandle = MakeOutgoingGameplayEffectSpec(CooldownGE->GetClass(), GetAbilityLevel());
-		SpecHandle.Data.Get()->DynamicGrantedTags.AppendTags(CooldownTags);
-		ApplyGameplayEffectSpecToOwner(Handle, ActorInfo, ActivationInfo, SpecHandle);
-	}
+        FGameplayEffectSpecHandle SpecHandle = MakeOutgoingGameplayEffectSpec(CooldownGE->GetClass(), GetAbilityLevel());
+        SpecHandle.Data.Get()->DynamicGrantedTags.AppendTags(CooldownTags);
+        ApplyGameplayEffectSpecToOwner(Handle, ActorInfo, ActivationInfo, SpecHandle);
+    }
 }  
 ```
 
@@ -1553,8 +1626,9 @@ float UPGMMC_HeroAbilityCooldown::CalculateBaseMagnitude_Implementation(const FG
     const UPGGameplayAbility* Ability = Cast<UPGGameplayAbility>(Spec.GetContext().GetAbilityInstance_NotReplicated());  
     if (!Ability)    
     {
-	    return 0.0f;    
-	}  
+        return 0.0f;    
+    }  
+    
     return Ability->CooldownDuration.GetValueAtLevel(Ability->GetAbilityLevel());
 }  
 ```
@@ -1564,31 +1638,31 @@ float UPGMMC_HeroAbilityCooldown::CalculateBaseMagnitude_Implementation(const FG
 ##### 4.5.15.1 Get the Cooldown Gameplay Effect's Remaining Time
 ```c++  
 bool APGPlayerState::GetCooldownRemainingForTag(FGameplayTagContainer CooldownTags,
-												float & TimeRemaining,
-												float & CooldownDuration)  
+                                                float & TimeRemaining,
+                                                float & CooldownDuration)  
 {  
-	if (AbilitySystemComponent && CooldownTags.Num() > 0)
-	{       
-		TimeRemaining = 0.f;       
-		CooldownDuration = 0.f;
-		FGameplayEffectQuery const Query = FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(CooldownTags);
-		TArray<TPair<float, float>> DurationAndTimeRemaining = AbilitySystemComponent->GetActiveEffectsTimeRemainingAndDuration(Query);       
-		if (DurationAndTimeRemaining.Num() > 0)       
-		{          
-			int32 BestIdx = 0;          
-			float LongestTime = DurationAndTimeRemaining[0].Key;         
-			for (int32 Idx = 1; Idx < DurationAndTimeRemaining.Num(); ++Idx)          
-			{
-				if (DurationAndTimeRemaining[Idx].Key > LongestTime)             
-				{               
-					LongestTime = DurationAndTimeRemaining[Idx].Key;                
-					BestIdx = Idx;             
-				}          
-			}  
-	        TimeRemaining = DurationAndTimeRemaining[BestIdx].Key;          
-	        CooldownDuration = DurationAndTimeRemaining[BestIdx].Value;  
+    if (AbilitySystemComponent && CooldownTags.Num() > 0)
+    {       
+        TimeRemaining = 0.f;       
+        CooldownDuration = 0.f;
+        FGameplayEffectQuery const Query = FGameplayEffectQuery::MakeQuery_MatchAnyOwningTags(CooldownTags);
+        TArray<TPair<float, float>> DurationAndTimeRemaining = AbilitySystemComponent->GetActiveEffectsTimeRemainingAndDuration(Query);       
+        if (DurationAndTimeRemaining.Num() > 0)       
+        {          
+            int32 BestIdx = 0;          
+            float LongestTime = DurationAndTimeRemaining[0].Key;         
+            for (int32 Idx = 1; Idx < DurationAndTimeRemaining.Num(); ++Idx)          
+            {
+                if (DurationAndTimeRemaining[Idx].Key > LongestTime)             
+                {               
+                    LongestTime = DurationAndTimeRemaining[Idx].Key;                
+                    BestIdx = Idx;             
+                }          
+            }  
+            TimeRemaining = DurationAndTimeRemaining[BestIdx].Key;          
+            CooldownDuration = DurationAndTimeRemaining[BestIdx].Value;  
 	        
-	        return true;       
+            return true;       
 	    }    
 	}  
 	
@@ -1626,39 +1700,34 @@ bool APGPlayerState::GetCooldownRemainingForTag(FGameplayTagContainer CooldownTa
 **注意：** 这确实涉及到了 `const_cast` 的使用，可能不是 Epic 预期的更改持续时间的方式，但目前为止似乎工作得很好。
 
 ```c++  
-bool UPAAbilitySystemComponent::SetGameplayEffectDurationHandle(
-		FActiveGameplayEffectHandle Handle,
-		float NewDuration)  
+bool UPAAbilitySystemComponent::SetGameplayEffectDurationHandle(FActiveGameplayEffectHandle Handle, float NewDuration)  
 {  
     if (!Handle.IsValid())    
     {       
-	    return false;    
-	}  
+        return false;    
+    }  
     const FActiveGameplayEffect* ActiveGameplayEffect = GetActiveGameplayEffect(Handle);    
     if (!ActiveGameplayEffect)    
     {       
-	    return false;    
-	}  
+        return false;    
+    }  
     FActiveGameplayEffect* AGE = const_cast<FActiveGameplayEffect*>(ActiveGameplayEffect);
     if (NewDuration > 0)    
     {       
-	    AGE->Spec.Duration = NewDuration;    
-	}    
-	else    
-	{       
-		AGE->Spec.Duration = 0.01f;    
-	}  
+        AGE->Spec.Duration = NewDuration;    
+    }    
+    else    
+    {       
+        AGE->Spec.Duration = 0.01f;    
+    }  
     AGE->StartServerWorldTime = ActiveGameplayEffects.GetServerWorldTime();
     AGE->CachedStartServerWorldTime = AGE->StartServerWorldTime;
     AGE->StartWorldTime = ActiveGameplayEffects.GetWorldTime();
     ActiveGameplayEffects.MarkItemDirty(*AGE);    
     ActiveGameplayEffects.CheckDuration(Handle);  
-    AGE->EventSet.OnTimeChanged.Broadcast(AGE->Handle,
-										  AGE->StartWorldTime, 
-										  AGE->GetDuration()
-	);    
-	OnGameplayEffectDurationChange(*AGE);  
-	
+    AGE->EventSet.OnTimeChanged.Broadcast(AGE->Handle, AGE->StartWorldTime, AGE->GetDuration());    
+    OnGameplayEffectDurationChange(*AGE);  
+    
     return true;
 }  
 ```
@@ -1704,21 +1773,21 @@ UGameplayAbilityRuntimeGE::UGameplayAbilityRuntimeGE()
 }  
   
 void UGameplayAbilityRuntimeGE::ActivateAbility(const FGameplayAbilitySpecHandle Handle,
-												const FGameplayAbilityActorInfo* ActorInfo,
-												const FGameplayAbilityActivationInfo ActivationInfo,
-												const FGameplayEventData* TriggerEventData)  
+                                                const FGameplayAbilityActorInfo* ActorInfo,
+                                                const FGameplayAbilityActivationInfo ActivationInfo,
+                                                const FGameplayEventData* TriggerEventData)  
 {  
     if (HasAuthorityOrPredictionKey(ActorInfo, &ActivationInfo))    
     {       
-	    if (!CommitAbility(Handle, ActorInfo, ActivationInfo))       
-	    {          
-		    EndAbility(Handle, ActorInfo, ActivationInfo, true, true);       
-		}  
+        if (!CommitAbility(Handle, ActorInfo, ActivationInfo))       
+        {          
+            EndAbility(Handle, ActorInfo, ActivationInfo, true, true);       
+        }  
 		
        // Create the GE at runtime.       
-       UGameplayEffect* GameplayEffect = 
-	       NewObject<UGameplayEffect>(GetTransientPackage(),TEXT("RuntimeInstantGE"));       
-       GameplayEffect->DurationPolicy = EGameplayEffectDurationType::Instant;// Only instant works with runtime GE.  
+        UGameplayEffect* GameplayEffect = 
+        NewObject<UGameplayEffect>(GetTransientPackage(),TEXT("RuntimeInstantGE"));       
+        GameplayEffect->DurationPolicy = EGameplayEffectDurationType::Instant;// Only instant works with runtime GE.  
        
        // Add a simple scalable float modifier, which overrides MyAttribute with 42.       
        // In real world applications, consume information passed via TriggerEventData. 
@@ -1731,10 +1800,10 @@ void UGameplayAbilityRuntimeGE::ActivateAbility(const FGameplayAbilitySpecHandle
        
        // Apply the GE.  
        
-       // Create the GESpec here to avoid the behavior of ASC to create GESpecs from the GE              class default object.       
-       // Since we have a dynamic GE here, this would create a GESpec with the base                      GameplayEffect class, so we       
-       // would lose our modifiers. Attention: It is unknown, if this "hack" done here can               have drawbacks!       
-       // The spec prevents the GE object being collected by the GarbageCollector, since the             GE is a UPROPERTY on the spec.       
+       // Create the GESpec here to avoid the behavior of ASC to create GESpecs from the GE class default object.       
+       // Since we have a dynamic GE here, this would create a GESpec with the base GameplayEffect class, so we       
+       // would lose our modifiers. Attention: It is unknown, if this "hack" done here can have drawbacks!       
+       // The spec prevents the GE object being collected by the GarbageCollector, since the GE is a UPROPERTY on the spec.       
        FGameplayEffectSpec* GESpec = new FGameplayEffectSpec(GameplayEffect, {}, 0.f); // "new", since lifetime is managed by a shared ptr within the handle
        ApplyGameplayEffectSpecToOwner(Handle, ActorInfo, ActivationInfo, FGameplayEffectSpecHandle(GESpec));    
     }    
@@ -1850,17 +1919,13 @@ enum class EGDAbilityInputID : uint8
 
 ```c++  
 // Bind to AbilitySystemComponent  
-FTopLevelAssetPath AbilityEnumAssetPath = FTopLevelAssetPath(
-															FName("/Script/GASDocumentation"), 
-															FName("EGDAbilityInputID")
-);  
-AbilitySystemComponent->BindAbilityActivationToInputComponent(
-				PlayerInputComponent,
-				FGameplayAbilityInputBinds(FString("ConfirmTarget"),  
-			    FString("CancelTarget"), 
-			    AbilityEnumAssetPath, 
-			    static_cast<int32>(EGDAbilityInputID::Confirm), 
-			    static_cast<int32>(EGDAbilityInputID::Cancel))
+FTopLevelAssetPath AbilityEnumAssetPath = FTopLevelAssetPath(FName("/Script/GASDocumentation"), FName("EGDAbilityInputID"));  
+AbilitySystemComponent->BindAbilityActivationToInputComponent(PlayerInputComponent,
+                                                              FGameplayAbilityInputBinds(FString("ConfirmTarget"),  
+                                                              FString("CancelTarget"), 
+                                                              AbilityEnumAssetPath, 
+                                                              static_cast<int32>(EGDAbilityInputID::Confirm), 
+                                                              static_cast<int32>(EGDAbilityInputID::Cancel))
 );  
 ```
 
@@ -1901,8 +1966,7 @@ void UGSAbilitySystemComponent::AbilityLocalInputPressed(int32 InputID)
                 Spec.InputPressed = true;
                 if (Spec.IsActive())
                 {
-                    if (Spec.Ability->bReplicateInputDirectly && 
-                        IsOwnerActorAuthoritative() == false)
+                    if (Spec.Ability->bReplicateInputDirectly && IsOwnerActorAuthoritative() == false)
                     {
                         ServerSetInputPressed(Spec.Handle);
                     }
@@ -1947,8 +2011,11 @@ void AGDCharacterBase::AddCharacterAbilities()
 
     for (TSubclassOf<UGDGameplayAbility>& StartupAbility : CharacterAbilities)
     {
-        AbilitySystemComponent->GiveAbility(
-            FGameplayAbilitySpec(StartupAbility, GetAbilityLevel(StartupAbility.GetDefaultObject()->AbilityID), static_cast<int32>(StartupAbility.GetDefaultObject()->AbilityInputID), this));
+        AbilitySystemComponent->GiveAbility(FGameplayAbilitySpec(StartupAbility, 
+                                            GetAbilityLevel(StartupAbility.GetDefaultObject()->AbilityID),
+                                            static_cast<int32>(StartupAbility.GetDefaultObject()->AbilityInputID), 
+                                            this)
+        );
     }
 
     AbilitySystemComponent->bCharacterAbilitiesGiven = true;
@@ -2015,11 +2082,12 @@ FGameplayAbilitySpecHandle GiveAbilityAndActivateOnce(const FGameplayAbilitySpec
 ```c++  
 void UGDGameplayAbility::OnAvatarSet(const FGameplayAbilityActorInfo * ActorInfo, const FGameplayAbilitySpec & Spec)  
 {  
-    Super::OnAvatarSet(ActorInfo, Spec);  
+    Super::OnAvatarSet(ActorInfo, Spec); 
+     
     if (bActivateAbilityOnGranted)    
     {       
-	    ActorInfo->AbilitySystemComponent->TryActivateAbility(Spec.Handle, false);    
-	}
+        ActorInfo->AbilitySystemComponent->TryActivateAbility(Spec.Handle, false);    
+    }
 }  
 ```
 
@@ -2098,7 +2166,9 @@ virtual void DestroyActiveState();
 `ASC` 还包含另一个辅助函数，该函数以 `GameplayTagContainer` 作为参数来协助搜索，而不是手动遍历 `GameplayAbilitySpecs` 列表。`bOnlyAbilitiesThatSatisfyTagRequirements` 参数只会返回满足其 `GameplayTag` 要求且当前可以激活的 `GameplayAbilitySpecs`。例如，你可以有两个基础攻击类型的 `GameplayAbilities`，一个使用武器，另一个徒手进行，正确的攻击方式会根据是否装备了武器来设置 `GameplayTag` 要求从而被激活。更多详细信息，请参阅 Epic 对该函数的注释。
 
 ```c++  
-UAbilitySystemComponent::GetActivatableGameplayAbilitySpecsByAllMatchingTags(const FGameplayTagContainer& GameplayTagContainer, TArray < struct FGameplayAbilitySpec* >& MatchingGameplayAbilities, bool bOnlyAbilitiesThatSatisfyTagRequirements = true)  
+UAbilitySystemComponent::GetActivatableGameplayAbilitySpecsByAllMatchingTags(const FGameplayTagContainer& GameplayTagContainer, 
+                                                                             TArray < struct FGameplayAbilitySpec* >& MatchingGameplayAbilities, 
+                                                                             bool bOnlyAbilitiesThatSatisfyTagRequirements = true)
 ```
 
 一旦找到所需的 `FGameplayAbilitySpec`，你可以调用其上的 `IsActive()` 方法。
@@ -2221,21 +2291,27 @@ virtual bool ShouldDoServerAbilityRPCBatch() const override { return true; }
 这种机制只能在 C++ 中实现，并且只能通过 `FGameplayAbilitySpecHandle` 来激活能力。
 
 ```c++
-bool UGSAbilitySystemComponent::BatchRPCTryActivateAbility(FGameplayAbilitySpecHandle InAbilityHandle, bool EndAbilityImmediately) { bool AbilityActivated = false; if (InAbilityHandle.IsValid()) { FScopedServerAbilityRPCBatcher GSAbilityRPCBatcher(this, InAbilityHandle); AbilityActivated = TryActivateAbility(InAbilityHandle, true);
-	if (EndAbilityImmediately)
-	{
-		FGameplayAbilitySpec* AbilitySpec = FindAbilitySpecFromHandle(InAbilityHandle);
-		if (AbilitySpec)
-		{
-			UGSGameplayAbility* GSAbility = Cast<UGSGameplayAbility>(AbilitySpec->GetPrimaryInstance());
-			GSAbility->ExternalEndAbility();
-		}
-	}
+bool UGSAbilitySystemComponent::BatchRPCTryActivateAbility(FGameplayAbilitySpecHandle InAbilityHandle, bool EndAbilityImmediately) 
+{ 
+    bool AbilityActivated = false; 
+    if (InAbilityHandle.IsValid()) 
+    { 
+        FScopedServerAbilityRPCBatcher GSAbilityRPCBatcher(this, InAbilityHandle); 
+        AbilityActivated = TryActivateAbility(InAbilityHandle, true);
+        if (EndAbilityImmediately)
+        {
+            FGameplayAbilitySpec* AbilitySpec = FindAbilitySpecFromHandle(InAbilityHandle);
+            if (AbilitySpec)
+            {
+                UGSGameplayAbility* GSAbility = Cast<UGSGameplayAbility>(AbilitySpec->GetPrimaryInstance());
+                GSAbility->ExternalEndAbility();
+            }
+        }
+        
+        return AbilityActivated;
+    }
 
-	return AbilityActivated;
-}
-
-return AbilityActivated;
+    return AbilityActivated;
 }
 ```
 
@@ -2685,22 +2761,29 @@ struct MYGAME_API FGameplayAbilityTargetData_CustomData : public FGameplayAbilit
 {  
     GENERATED_BODY()public:  
   
-    FGameplayAbilityTargetData_CustomData()    { }  
-    UPROPERTY()    FName CoolName = NAME_None;  
-    UPROPERTY()    FPredictionKey MyCoolPredictionKey;  
+    FGameplayAbilityTargetData_CustomData() { }
+    
+    UPROPERTY()    
+    FName CoolName = NAME_None;  
+    
+    UPROPERTY()    
+    FPredictionKey MyCoolPredictionKey; 
+     
     // This is required for all child structs of FGameplayAbilityTargetData    
     virtual UScriptStruct* GetScriptStruct() const override    
     {        
-	    return FGameplayAbilityTargetData_CustomData::StaticStruct();    
+        return FGameplayAbilityTargetData_CustomData::StaticStruct();    
     }  
+    
     // This is required for all child structs of FGameplayAbilityTargetData    
     bool NetSerialize(FArchive& Ar, class UPackageMap* Map, bool& bOutSuccess)    
-    {        // The engine already defined NetSerialize for FName & FPredictionKey, thanks Epic!        
-	    CoolName.NetSerialize(Ar, Map, bOutSuccess);        
-	    MyCoolPredictionKey.NetSerialize(Ar, Map, bOutSuccess);        
-	    bOutSuccess = true;        
+    {        
+        // The engine already defined NetSerialize for FName & FPredictionKey, thanks Epic!        
+        CoolName.NetSerialize(Ar, Map, bOutSuccess);        
+        MyCoolPredictionKey.NetSerialize(Ar, Map, bOutSuccess);        
+        bOutSuccess = true;        
     
-	    return true;    
+        return true;    
     }
 }  
   
@@ -2709,7 +2792,7 @@ struct TStructOpsTypeTraits<FGameplayAbilityTargetData_CustomData> : public TStr
 {  
     enum    
     {        
-	    WithNetSerializer = true // This is REQUIRED for FGameplayAbilityTargetDataHandle net serialization to work    
+        WithNetSerializer = true // This is REQUIRED for FGameplayAbilityTargetDataHandle net serialization to work    
     };
 };  
 ```
@@ -2723,7 +2806,8 @@ FGameplayAbilityTargetDataHandle MakeTargetDataFromCustomName(const FName Custom
     // Create our target data type,    
     // Handle's automatically cleanup and delete this data when the handle is destructed,   
     // if you don't add this to a handle then be careful because this deals with memory management and memory leaks so its safe to just always add it to a handle at some point in the frame!  
-	    FGameplayAbilityTargetData_CustomData* MyCustomData = new             FGameplayAbilityTargetData_CustomData();    
+    FGameplayAbilityTargetData_CustomData* MyCustomData = new             
+    FGameplayAbilityTargetData_CustomData();    
     // Setup the struct's information to use the inputted name and any other changes we may want to do    
     MyCustomData->CoolName = CustomName;        
     // Make our handle wrapper for Blueprint usage  
@@ -2733,7 +2817,7 @@ FGameplayAbilityTargetDataHandle MakeTargetDataFromCustomName(const FName Custom
     // Output our handle to Blueprint    
     
     return Handle;
-    }  
+}  
 ```
 
 为了获取值，需要进行类型安全检查，因为从 `FGameplayAbilityTargetDataHandle` 的目标数据中获取值的唯一方式是使用通用的 C/C++ 类型转换，这种方式 **不是类型安全的**，可能会导致对象切片和崩溃。对于类型检查，有多种方法可以实现（实际上可以根据个人喜好选择），两种常见的方法是：
@@ -2752,16 +2836,19 @@ FName GetCoolNameFromTargetData(const FGameplayAbilityTargetDataHandle& Handle, 
     // Valid check we have something to use, null data means nothing to cast for  
     if(Data == nullptr)    
     {        
-	    return NAME_None;    
-	}    
-	// This is basically the type checking pass, static_cast does not have type safety, this is why we do this check.    
-	// If we don't do this then it will object slice the struct and thus we have no way of making sure its that type.    
-	if(Data->GetScriptStruct() == FGameplayAbilityTargetData_CustomData::StaticStruct())    
+        return NAME_None;    
+    }   
+     
+    // This is basically the type checking pass, static_cast does not have type safety, this is why we do this check.    
+    // If we don't do this then it will object slice the struct and thus we have no way of making sure its that type.    
+    if(Data->GetScriptStruct() == FGameplayAbilityTargetData_CustomData::StaticStruct())    
 	{        
-		// Here is when you would do the cast because we know its the correct type already
-		FGameplayAbilityTargetData_CustomData* CustomData = static_cast<FGameplayAbilityTargetData_CustomData*>(Data);        
-		return CustomData->CoolName;  
-    }    
+        // Here is when you would do the cast because we know its the correct type already
+        FGameplayAbilityTargetData_CustomData* CustomData = static_cast<FGameplayAbilityTargetData_CustomData*>(Data);
+                
+        return CustomData->CoolName;  
+    }
+        
     return NAME_None;
 }  
 ```
@@ -2818,8 +2905,8 @@ struct GASDOCUMENTATION_API FGDNameTargetDataFilter : public FGameplayTargetData
 然而，这并不能直接应用于 `Wait Target Data` 节点，因为它需要一个 `FGameplayTargetDataFilterHandle`。必须创建一个新的自定义 `Make Filter Handle` 来接受这个子类：
 
 ```c++  
-FGameplayTargetDataFilterHandle UGDTargetDataFilterBlueprintLibrary::MakeGDNameFilterHandle(
-							FGDNameTargetDataFilter Filter, AActor* FilterActor)  
+FGameplayTargetDataFilterHandle UGDTargetDataFilterBlueprintLibrary::MakeGDNameFilterHandle(FGDNameTargetDataFilter Filter, 
+                                                                                            AActor* FilterActor)  
 {  
     FGameplayTargetDataFilter* NewFilter = new FGDNameTargetDataFilter(Filter);    
     NewFilter->InitializeFilterContext(FilterActor);  
@@ -3130,11 +3217,13 @@ Unreal Engine 中存在一个 [bug](https://issues.unrealengine.com/issue/UE-811
 ```c++  
 void AGDPlayerState::PostInitializeComponents()  
 {  
-    Super::PostInitializeComponents();  
+    Super::PostInitializeComponents(); 
+     
     if (AbilitySystemComponent)    
     {       
-    AbilitySystemComponent->AddSet<UGDAttributeSetBase>();       
-    // ... any other AttributeSets that you may have    
+        AbilitySystemComponent->AddSet<UGDAttributeSetBase>();      
+         
+        // ... any other AttributeSets that you may have    
     }
 }  
 ```
@@ -3156,9 +3245,10 @@ float AGDPlayerState::GetHealth() const
 {  
     if (AbilitySystemComponent)    
     {
-	    return AbilitySystemComponent->GetNumericAttribute(UGDAttributeSetBase::GetHealthAttribute());    
-    }  
-	return 0.0f;
+        return AbilitySystemComponent->GetNumericAttribute(UGDAttributeSetBase::GetHealthAttribute());    
+    }
+      
+    return 0.0f;
 }  
 ```
 
@@ -3207,16 +3297,28 @@ Unreal Engine 5.1 已弃用在 `BindAbilityActivationToInputComponent()` 构造�
 旧的、已弃用的方式：
 
 ```c++  
-AbilitySystemComponent->BindAbilityActivationToInputComponent(InputComponent, FGameplayAbilityInputBinds(FString("ConfirmTarget"),  
-    FString("CancelTarget"), FString("EGDAbilityInputID"), static_cast<int32>(EGDAbilityInputID::Confirm), static_cast<int32>(EGDAbilityInputID::Cancel)));  
+AbilitySystemComponent->BindAbilityActivationToInputComponent(InputComponent, 
+                                                              FGameplayAbilityInputBinds(FString("ConfirmTarget"),  
+                                                              FString("CancelTarget"), FString("EGDAbilityInputID"), 
+                                                              static_cast<int32>(EGDAbilityInputID::Confirm), 
+                                                              static_cast<int32>(EGDAbilityInputID::Cancel))
+);  
 ```
 
 新方式：
 
 ```c++  
-FTopLevelAssetPath AbilityEnumAssetPath = FTopLevelAssetPath(FName("/Script/GASDocumentation"), FName("EGDAbilityInputID"));  
-AbilitySystemComponent->BindAbilityActivationToInputComponent(InputComponent, FGameplayAbilityInputBinds(FString("ConfirmTarget"),  
-    FString("CancelTarget"), AbilityEnumAssetPath, static_cast<int32>(EGDAbilityInputID::Confirm), static_cast<int32>(EGDAbilityInputID::Cancel)));  
+FTopLevelAssetPath AbilityEnumAssetPath = FTopLevelAssetPath(FName("/Script/GASDocumentation"), 
+                                                             FName("EGDAbilityInputID")
+);  
+
+AbilitySystemComponent->BindAbilityActivationToInputComponent(InputComponent, 
+                                                              FGameplayAbilityInputBinds(FString("ConfirmTarget"),
+                                                              FString("CancelTarget"), 
+                                                              AbilityEnumAssetPath, 
+                                                              static_cast<int32>(EGDAbilityInputID::Confirm), 
+                                                              static_cast<int32>(EGDAbilityInputID::Cancel))
+);  
 ```
 
 更多信息，请参阅 `Engine\Source\Runtime\CoreUObject\Public\UObject\TopLevelAssetPath.h`。
